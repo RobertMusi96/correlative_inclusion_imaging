@@ -1,0 +1,23 @@
+# image and measurement data stay out of the repository
+data/
+*.tif
+*.tiff
+*.png
+*.jpg
+*.csv
+*.xlsx
+!tests/**/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# notebooks / editors
+.ipynb_checkpoints/
+.vscode/
+.idea/
