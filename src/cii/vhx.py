@@ -11,8 +11,8 @@ empirically and checked against VHX area readings and scale bars:
   the image centre. Stage readout repeatability is about +-2 um.
 * magnification: tag 0x011E; capture time: tag 0x0002 (OLE automation date).
 
-Coordinate convention (used throughout this package)
------------------------------------------------------
+Coordinate convention (see cii.geometry)
+----------------------------------------
 Stage coordinates are in um. Image column index increases with stage X and
 image row index increases with stage Y (verified from overlapping image pairs
 and stitched overviews). The stage position refers to the image centre, i.e.
@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+
+from .geometry import StageImage
 
 # MakerNote tags (empirical)
 TAG_TIME = 0x0002
@@ -56,49 +58,16 @@ class Panorama:
 
 
 @dataclass
-class VHXImage:
-    path: Path
-    width: int
-    height: int
-    magnification: float | None
-    um_per_px: float
-    stage_x: float
-    stage_y: float
+class VHXImage(StageImage):
+    """VHX image: stage X increases to the right, stage Y downwards (x_dir = y_dir = +1)."""
+
+    magnification: float | None = None
     stage_z: float | None = None
     captured: _dt.datetime | None = None
     panorama: Panorama | None = None
     has_multilighting_layers: bool = False
     raw_fields: dict = field(default_factory=dict, repr=False)
 
-    # ---- geometry -------------------------------------------------------------
-    @property
-    def centre_px(self) -> tuple[float, float]:
-        return (self.width - 1) / 2, (self.height - 1) / 2
-
-    @property
-    def size_um(self) -> tuple[float, float]:
-        return self.width * self.um_per_px, self.height * self.um_per_px
-
-    def pixel_to_stage(self, col, row):
-        """Pixel coordinates (0-based, sub-pixel allowed) -> stage um."""
-        cx, cy = self.centre_px
-        x = self.stage_x + (np.asarray(col, float) - cx) * self.um_per_px
-        y = self.stage_y + (np.asarray(row, float) - cy) * self.um_per_px
-        return x, y
-
-    def stage_to_pixel(self, x, y):
-        """Stage um -> pixel coordinates (0-based, sub-pixel)."""
-        cx, cy = self.centre_px
-        col = cx + (np.asarray(x, float) - self.stage_x) / self.um_per_px
-        row = cy + (np.asarray(y, float) - self.stage_y) / self.um_per_px
-        return col, row
-
-    def contains_stage(self, x, y, margin_px: float = 0) -> np.ndarray:
-        col, row = self.stage_to_pixel(x, y)
-        return ((col >= margin_px) & (col <= self.width - 1 - margin_px)
-                & (row >= margin_px) & (row <= self.height - 1 - margin_px))
-
-    # ---- pixels ----------------------------------------------------------------
     def read_image(self) -> np.ndarray:
         """The main image (H x W x 3, uint8)."""
         return tifffile.imread(self.path, key=0)

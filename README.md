@@ -17,13 +17,21 @@ or anywhere else and pass paths to the scripts.
 
 ## Coordinate convention
 
-All positions are VHX **stage coordinates in µm**.
+Every instrument has its own **stage coordinates in µm**; images know where they
+sit in them (`cii.geometry.StageImage`):
 
-* The stage position stored in an image refers to the **image centre**, pixel
+* The stage position of an image refers to the **image centre**, pixel
   `((width-1)/2, (height-1)/2)` (0-based).
-* Image **columns increase with stage X**, image **rows increase with stage Y**
-  (stage Y grows "downwards" on screen).
-* `VHXImage.pixel_to_stage()` / `stage_to_pixel()` convert between the two.
+* Axis directions relative to the image:
+
+  | Instrument | stage X | stage Y |
+  | --- | --- | --- |
+  | Keyence VHX-7000 | increases to the right (`x_dir = +1`) | increases downwards |
+  | SEM, Oxford AZtec | increases to the **left** (`x_dir = -1`) | increases downwards |
+
+* `pixel_to_stage()` / `stage_to_pixel()` convert between pixels and stage µm.
+* Between instruments: `cii.registration.Transform` (fitted from indents),
+  `dst = A @ [x, y] + t`.
 
 ## What `cii.vhx` reads from a VHX TIFF
 
@@ -40,6 +48,13 @@ The VHX stores its acquisition data in a proprietary EXIF MakerNote. Fields used
 
 Measured pixel sizes at 2880 x 2160 px (VHX-7000, Nov 2026):
 100x 1.0275, 200x 0.5141, 500x 0.2037, 1000x 0.1023 µm/px.
+
+## What `cii.sem` reads from an AZtec TIFF
+
+Private TIFF tag 50684 (`key=value` text): `PixelExtent` (m/px), magnification,
+kV, working distance, date. Its stage position is rounded to 0.1 mm, so the
+image-centre position is taken from the field table exported with the feature
+analysis (`FieldID, StageXmm, StageYmm`), matched via `Site_<n>` in the file name.
 
 ## Notes on VHX serial recording
 
@@ -58,23 +73,45 @@ Measured pixel sizes at 2880 x 2160 px (VHX-7000, Nov 2026):
 
 ### `scripts/locate_indents.py`
 
-Stage coordinates of hardness indents. For each indent, put the original VHX TIFF
+Stage coordinates of hardness indents. For each indent, put the original image
 `<name>.tif` and a copy with a red circle drawn around the indent,
-`<name>_marked.tif` (or `.png`), into one folder:
+`<name>_marked.tif` (or `.png`), into one folder. The label used to match
+indents between instruments is `Indent_<word>` from the file name.
 
 ```bash
-python scripts/locate_indents.py data/2026-11-02_MnB/indents -o indents.csv \
-    --check data/2026-11-02_MnB/indents/Indent_botleft_200x.tif
+# light microscope
+python scripts/locate_indents.py data/MnB/vhx_indents -o vhx_indents.csv \
+    --figures figures --check data/MnB/vhx_indents/Indent_botleft_200x.tif
+# SEM
+python scripts/locate_indents.py data/MnB/sem_indents --instrument sem \
+    --fields data/MnB/field_information.csv -o sem_indents.csv --figures figures
 ```
 
-The indent centre is the centroid of the dark cavity inside the circle
-(sub-pixel). `--check` searches further images for the indents and reports the
-deviation, e.g. to verify the coordinate frame across objectives.
+Segmentation: VHX - centroid of the dark cavity; SEM (BSE) - convex hull of the
+strongly bright/dark indent faces (robust z-score > 3.5 after smoothing, pieces
+within 8 px grouped). `--figures` writes one PNG per indent (whole image + zoom
+with the segmented outline and centroid). `--check` verifies indent positions in
+further images (e.g. another objective).
+
+### `scripts/fit_transform.py`
+
+```bash
+python scripts/fit_transform.py vhx_indents.csv sem_indents.csv -o vhx_to_sem.json
+```
+
+Similarity transform (rotation, scale, translation, mirror) from the matched
+indents; prints residuals and the leave-one-out error (each indent predicted
+from the others), writes the transform as JSON. `--model affine` for an affine fit.
+
+## Results so far
+
+MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:
+X mirrored, scale 1.0011, rotation +0.41 deg, RMS residual 1.5 µm,
+leave-one-out error <= 4.2 µm.
 
 ## Roadmap
 
-1. SEM/EDS particle list import (needs stage X/Y per particle).
-2. VHX -> SEM transform from the indents (similarity/affine), refined with
-   inclusion centroids.
+1. SEM/EDS particle list import with stage X/Y per particle.
+2. Refine the VHX -> SEM transform with inclusion centroids (done: indent-based transform).
 3. Inclusion detection in VHX series images and matching to SEM particles.
 4. Dataset export (image crops + SEM class) for training.
