@@ -35,6 +35,8 @@ from cii.compare import compare, summary
 
 def load(folder: Path):
     folder = folder.parent if folder.suffix == ".csv" else folder
+    if not folder.is_dir():
+        raise SystemExit(f"folder not found: {str(folder)!r} - paths with spaces must be in quotes")
     img_csv = folder / "images.csv"
     if not img_csv.exists():
         raise SystemExit(f"{img_csv} not found - rerun detect_inclusions.py (it writes images.csv)")

@@ -4,6 +4,9 @@ For every image: a CSV row per object (pixel and stage coordinates, size,
 shape, contrast, colour), a full-resolution overlay PNG with the segmented
 objects highlighted and numbered, and a gallery PNG with one tile per object.
 
+Images can be given as files, a folder (all .tif in it) or a pattern; put
+paths with spaces in quotes (Windows: "D:\\My data\\500x").
+
 Example:
     # whole series, tables only, 4 processes
     python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x --no-figures -j 4
@@ -22,6 +25,7 @@ Use one output folder per magnification / series.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -56,10 +60,30 @@ def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery
     return obj, info
 
 
+def expand_images(items: list[str]) -> list[Path]:
+    """Files, folders (all .tif inside) and wildcard patterns - Windows does not expand *.tif itself."""
+    paths, missing = [], []
+    for it in items:
+        p = Path(it)
+        if p.is_dir():
+            found = sorted(f for f in p.iterdir() if f.suffix.lower() in (".tif", ".tiff") and "_marked" not in f.stem)
+        elif any(ch in it for ch in "*?["):
+            found = sorted(Path(f) for f in glob.glob(it))
+        else:
+            found = [p] if p.is_file() else []
+        if not found:
+            missing.append(it)
+        paths += found
+    if missing:
+        raise SystemExit("not found: " + ", ".join(repr(m) for m in missing)
+                         + "\nPaths with spaces must be in quotes, e.g. \"D:\\My data\\500x\"")
+    return sorted(dict.fromkeys(paths))
+
+
 def main():
     d = DetectionParams()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("images", type=Path, nargs="+")
+    ap.add_argument("images", nargs="+", help="image files, folders or patterns such as \"D:\\data\\500x\\*.tif\"")
     ap.add_argument("-o", "--output", type=Path, default=Path("detection"))
     ap.add_argument("--high", type=float, default=d.high, help=f"core contrast (default {d.high})")
     ap.add_argument("--low", type=float, default=d.low, help=f"edge contrast (default {d.low})")
@@ -76,7 +100,8 @@ def main():
                         size_fraction=args.size_fraction, min_area_um2=args.min_area)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "parameters.json").write_text(json.dumps(params_dict(p), indent=2))
-    paths = sorted(args.images)
+    paths = expand_images(args.images)
+    print(f"{len(paths)} images")
     work = [(path, p, args.output, not args.no_figures, args.gallery_max) for path in paths]
     tables, infos = [], []
     if args.jobs > 1:
