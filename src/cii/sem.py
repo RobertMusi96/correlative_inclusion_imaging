@@ -25,7 +25,8 @@ import tifffile
 from .geometry import StageImage
 
 AZTEC_TAG = 50684
-SITE_PATTERN = re.compile(r"Site_(\d+)")
+# "Site_135" in exported/flattened file names, "Site 135" as AZtec folder name
+SITE_PATTERN = re.compile(r"Site[\s_]*(\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -55,9 +56,11 @@ def read_field_positions(csv_path) -> pd.DataFrame:
     return out.set_index("field_id")
 
 
-def field_id_from_name(name: str) -> int | None:
-    m = SITE_PATTERN.search(name)
-    return int(m.group(1)) if m else None
+def field_id_from_name(name) -> int | None:
+    """Field (site) number from a file name or full path: the last 'Site_<n>' / 'Site <n>' in it,
+    so both flattened names and AZtec folder structures (...\\Site 135\\Electron Image 212.tif) work."""
+    m = SITE_PATTERN.findall(str(name))
+    return int(m[-1]) if m else None
 
 
 def _parse_aztec_tag(text: str) -> dict:
@@ -86,7 +89,7 @@ def read_aztec_tiff(path, fields: pd.DataFrame | None = None,
             raise ValueError(f"{path.name}: no AZtec metadata (tag {AZTEC_TAG})")
         meta = _parse_aztec_tag(tag.value)
     um_per_px = float(meta["PixelExtent"]) * 1e6
-    fid = field_id_from_name(path.stem)
+    fid = field_id_from_name(path)
     if stage_xy_um is not None:
         sx, sy = stage_xy_um
     elif fields is not None and fid is not None and fid in fields.index:

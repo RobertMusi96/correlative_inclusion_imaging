@@ -55,3 +55,23 @@ def test_field_table_and_site_number(tmp_path):
     f = read_field_positions(p)
     assert np.isclose(f.at[25, "stage_x_um"], 3530.25) and np.isclose(f.at[25, "stage_y_um"], 506.75)
     assert field_id_from_name("MnB__Feature_analysis__30102026__Site_25__Indent_topleft") == 25
+
+
+def test_site_number_from_flat_name_and_folder():
+    from pathlib import PureWindowsPath
+    from cii.sem import field_id_from_name
+    assert field_id_from_name("1793883636457_x__Feature_analysis__30102026__Site_135__Electron_Image_212_Input1.tif") == 135
+    assert field_id_from_name(PureWindowsPath(r"D:\SEM\MnB\Feature analysis\30102026\Site 135\Electron Image 212.tif")) == 135
+    assert field_id_from_name("Electron Image 212.tif") is None
+
+
+def test_bse_paths_folder_structure(tmp_path):
+    from cii.matching_figures import bse_paths
+    for site, name in [(135, "Electron Image 212.tif"), (135, "Fe Ka1.tif"), (7, "Electron Image 9.TIF")]:
+        d = tmp_path / "Feature analysis" / "30102026" / f"Site {site}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_bytes(b"")
+    (tmp_path / "x__Site_12__Electron_Image_3_Input1.tif").write_bytes(b"")
+    found = bse_paths(tmp_path, verbose=False)
+    assert set(found) == {135, 7, 12}
+    assert found[135].name == "Electron Image 212.tif"

@@ -6,7 +6,9 @@ Inputs:
                  and the field table (*field_information*.csv, or --fields)
     --transform  VHX -> SEM transform from the indents (fit_transform.py)
     --vhx        output folder of detect_inclusions.py (objects.csv + images.csv)
-    --bse        folder with the BSE field images (*Site_<n>*Electron_Image*.tif), for the figures
+    --bse        folder with the BSE field images, for the figures; searched with subfolders,
+                 site number from the path ('Site 135' folder or 'Site_135' in the name),
+                 only TIFFs with 'electron' in name or path
 
 Example:
     python scripts/match_sem_vhx.py --sem "D:\\SEM\\MnB" --transform results\\vhx_to_sem.json ^
@@ -114,8 +116,9 @@ def main():
     overview(part, args.output / "overview.png")
 
     if args.figures and args.bse:
+        if not args.bse.is_dir():
+            raise SystemExit(f"BSE folder not found: {str(args.bse)!r} (paths with spaces in quotes)")
         bse = bse_paths(args.bse)
-        print(f"BSE images found: {len(bse)}")
         rng = np.random.default_rng(args.seed)
         sel = part[part.status.isin(["matched", "ambiguous", "not_found"])]
         if args.only_available:

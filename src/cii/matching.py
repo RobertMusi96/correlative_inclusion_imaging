@@ -36,7 +36,6 @@ assigned to more than one SEM particle (cluster resolved by SEM only).
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -401,8 +400,3 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
     offsets = res.offsets.rename(columns={"ref_image": "sem_field", "other_image": "vhx_image"})
     return MatchResult(particles=part, offsets=offsets, coarse_offset=coarse, coarse_votes=n_coarse,
                        model=model or {}, history=history)
-
-
-def field_id_from_name(name: str) -> int | None:
-    m = re.search(r"Site_(\d+)", name)
-    return int(m.group(1)) if m else None

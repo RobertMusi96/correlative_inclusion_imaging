@@ -15,13 +15,32 @@ from matplotlib.patches import Rectangle
 STATUS_COLOUR = {"matched": "#2a78d6", "ambiguous": "#d6a12a", "not_found": "#e8590c"}
 
 
-def bse_paths(folder: Path) -> dict[int, Path]:
-    """Field id -> BSE image (file name contains Site_<n>, 'Electron_Image')."""
-    out = {}
-    for f in Path(folder).rglob("*.tif"):
-        m = re.search(r"Site_(\d+)", f.name)
-        if m and "Electron" in f.name:
-            out[int(m.group(1))] = f
+def bse_paths(folder: Path, verbose: bool = True) -> dict[int, Path]:
+    """Field id -> BSE image below ``folder``.
+
+    The site number is taken from the whole path ('Site_135' in a flattened file
+    name or a folder 'Site 135'); only TIFFs with 'electron' in the file name or
+    path are used (not EDS maps). Several electron images for one site: the one
+    with 'electron' in its file name, then the shortest name.
+    """
+    from .sem import field_id_from_name
+    folder = Path(folder)
+    tifs = [f for f in folder.rglob("*") if f.is_file() and f.suffix.lower() in (".tif", ".tiff")]
+    cand: dict[int, list[Path]] = {}
+    for f in tifs:
+        fid = field_id_from_name(str(f))
+        if fid is None or "electron" not in str(f).lower():
+            continue
+        cand.setdefault(fid, []).append(f)
+    out = {fid: sorted(fs, key=lambda f: ("electron" not in f.name.lower(), len(f.name)))[0] for fid, fs in cand.items()}
+    if verbose:
+        multi = sum(len(v) > 1 for v in cand.values())
+        print(f"BSE images: {len(tifs)} TIFFs below {folder}, {len(out)} fields with an electron image"
+              + (f" ({multi} fields with several, first by name used)" if multi else ""))
+        if not out and tifs:
+            print("  no 'Site <n>' + 'electron' found; examples of TIFF paths:")
+            for f in tifs[:5]:
+                print("   ", f)
     return out
 
 
