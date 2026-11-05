@@ -182,6 +182,13 @@ at 500x in 94 %, dark ones (contrast >= 0.3) in 97-99 %; misses are faint
 features (73 % with contrast < 0.2), a polishing scratch, and dust that moved
 between the series. Offset between the series 7.2 / -2.0 µm, changing with Y
 (~0.5 / -0.7 µm per mm, drift during acquisition), per-image scatter ~0.9 µm.
+Channel-max mode, whole area: 1000x objects that the mean mode also finds are found
+at 500x in 98.4 % (mean mode at 500x: 94 %); compact green-dominant (pink)
+objects >= 1.5 µm in 95-100 %, 1-1.5 µm in 82 %. Most remaining misses (77 %)
+are faint elongated objects (aspect ratio ~6.5, polishing scratches). The mode
+finds 2.4x more objects at 1000x and 3x more at 500x (1565/mm², chance of a
+random match within 2.5 µm about 3 %); 500x outlines are ~5-10 % larger than
+in mean mode.
 
 ## Roadmap
 
