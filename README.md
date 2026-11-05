@@ -103,15 +103,49 @@ Similarity transform (rotation, scale, translation, mirror) from the matched
 indents; prints residuals and the leave-one-out error (each indent predicted
 from the others), writes the transform as JSON. `--model affine` for an affine fit.
 
+### `scripts/detect_inclusions.py`
+
+Detection of dark objects in VHX bright-field images (`cii.detection`):
+background by median filter (40 µm), contrast = (background - grey) / background,
+hysteresis threshold (core >= 0.12, edge >= 0.03), object outline at half of the
+object's own peak contrast (`size_fraction`, makes sizes independent of blur),
+minimum area 0.3 µm² (applied to the detected object).
+
+```bash
+python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x
+```
+
+Writes `objects.csv` (pixel and stage coordinates, area, ECD, shape, contrast,
+colour, border flag), `parameters.json`, and per image `overlay/<image>.png`
+(full resolution, objects orange, border objects blue, IDs) and
+`gallery/<image>.png` (one tile per object, largest first).
+
+### `scripts/compare_magnifications.py`
+
+Checks the detection with images of the same area at two magnifications:
+objects of the higher magnification are searched at the lower one (offset per
+image pair), reported per size class as share found and size ratio.
+
+```bash
+python scripts/compare_magnifications.py results/detection_1000x/objects.csv results/detection_500x/objects.csv
+```
+
 ## Results so far
 
 MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:
 X mirrored, scale 1.0011, rotation +0.41 deg, RMS residual 1.5 µm,
 leave-one-out error <= 4.2 µm.
 
+VHX detection, 4 images each at 500x and 1000x (MnB, 2 Nov 2026), 1000x as reference:
+objects >= 1 µm found at 500x in 89-96 % (misses: faint trails), sizes agree
+within 5-7 % (half-maximum outline), positions within 0.25 µm after an offset
+of 4.3-6.6 µm (X) / -1.1-+0.9 µm (Y) per image pair (objective offset + stage).
+Objects of 0.6-0.8 µm: 63 % found at 500x, 0.4-0.6 µm: 6 %.
+Images were overexposed (14-35 % of pixels at 255 in R, G and B).
+
 ## Roadmap
 
 1. SEM/EDS particle list import with stage X/Y per particle.
 2. Refine the VHX -> SEM transform with inclusion centroids (done: indent-based transform).
-3. Inclusion detection in VHX series images and matching to SEM particles.
+3. Matching of VHX detections to SEM particles (done: VHX detection).
 4. Dataset export (image crops + SEM class) for training.
