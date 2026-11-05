@@ -184,12 +184,16 @@ python scripts/match_sem_vhx.py --sem data/MnB/sem --transform results/vhx_to_se
    overlapping fields counted once; particles at a SEM field border skipped.
 4. Position model fitted to the matches and matching repeated (3x): offset,
    linear trend over the sample, scale/rotation within the SEM field, one stage
-   error per SEM field and per VHX image. Match radius afterwards 4 x residual sd
-   (~1.5 µm) + 0.25 x SEM particle length.
+   error per SEM field and per VHX image, plus a per-field rescue (vote of the
+   shifts of a field's particles to VHX objects of similar size) for fields with
+   too few matches for the model. Match radius afterwards 3 x residual sd
+   (~1.1 µm) + 0.2 x SEM particle length.
 5. Best VHX object by distance + size difference; second object close in score
    -> `ambiguous`; no object close but inside a detected VHX region (faint
    particle with a dark spot, particle merged with a neighbour) -> matched with
-   `match_type = region` (needs the `region_*` columns, detection from Nov 2026 on).
+   `match_type = region`; the region is also preferred when its size fits the SEM
+   particle better (large particle whose outline kept only a dark spot). Needs the
+   `region_*` columns: rerun detect_inclusions.py with version >= 0.3.0.
 
 Outputs: `matches.csv` (one row per SEM particle: label, Class, Type, status
 matched / ambiguous / not_found / outside / sem_border / sem_duplicate, VHX
@@ -228,7 +232,7 @@ offset of the 500x series against the indent transform -132 / +11.5 µm
 scale +1.1 % (x) / +1.45 % (y) and ~0.35 deg rotation relative to the stage.
 SEM particles inside the VHX area with a VHX object: N 90 %, OS 89 %, NS 84 %,
 O 78 %, S 73 %, not typified 66 %, rejected 52 %; typified >= 2 µm about 94 %.
-Chance of a random object within the match radius ~3 % (null test).
+Chance of a random object within the match radius ~2 % (null test).
 Nitrides appear green-dominant (pink) in 92 % of the matches, oxides in 5 %.
 
 ## Roadmap

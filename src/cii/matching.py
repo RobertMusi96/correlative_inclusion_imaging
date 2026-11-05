@@ -28,7 +28,12 @@ Steps
    If no object is that close but the predicted position lies inside the
    detected region of a VHX object (``region_*`` columns of detect_inclusions.py:
    faint particle with a dark spot, particle merged with a neighbour at this
-   magnification), that object is taken with ``match_type = 'region'``.
+   magnification), that object is taken with ``match_type = 'region'``. The
+   region is also preferred when its size fits the SEM particle better than the
+   object's (a large particle whose half-maximum outline kept only a dark spot).
+   Fields whose stage error the model misses (few matches): per-field rescue, a
+   vote of the shifts between the field's particles and VHX objects of similar
+   size; at least ``field_min_votes`` particles must agree.
 
 Status per SEM particle: matched, ambiguous, not_found, outside (not covered by
 the VHX images), sem_border, sem_duplicate. ``vhx_shared``: the VHX object was
@@ -114,7 +119,7 @@ def load_sem_particles(files: dict[str, Path], field_width_px: int = 1024, field
 @dataclass
 class MatchParams:
     tolerance_um: float = 2.5             # match radius for small particles after fine alignment
-    tolerance_size_fraction: float = 0.25  # + this fraction of the SEM length (centroid vs bbox centre of large/long particles)
+    tolerance_size_fraction: float = 0.2   # + this fraction of the SEM length (centroid vs bbox centre of large/long particles)
     size_weight_um: float = 1.0           # score penalty per e-fold size difference
     ambiguity_margin_um: float = 0.5      # second object this close in score -> ambiguous
     vhx_border_penalty_um: float = 5.0    # prefer a complete VHX view over one cut by the image border
@@ -125,9 +130,12 @@ class MatchParams:
     global_search_um: float = 15.0        # around the coarse offset
     pair_search_um: float = 15.0
     iterations: int = 3                   # fit position model -> match again
-    model_tolerance_sigma: float = 4.0    # match radius after the model fit, in residual sd
+    model_tolerance_sigma: float = 3.0    # match radius after the model fit, in residual sd
     min_tolerance_um: float = 1.0
     region_margin_um: float = 0.5         # predicted position inside a VHX region bbox (+ margin)
+    field_search_um: float = 8.0          # per-field rescue: shift search radius
+    field_min_votes: int = 2              # particles of the field that must agree on the shift
+    field_size_ratio: float = 2.5         # objects used for the vote: size within this factor of the SEM ECD
     model_ridge: float = 1.0              # weight pulling per-field / per-image errors to 0
     outlier_sigma: float = 3.0            # matches with larger model residual are not used for the fit
 
@@ -201,7 +209,7 @@ def model_base(model: dict, R: np.ndarray, UV: np.ndarray, field: np.ndarray) ->
 
 
 def _assign(n: int, rows: np.ndarray, s_ecd: np.ndarray, s_len: np.ndarray, candidates_of, V, v_ecd, v_border,
-            p: MatchParams, tolerance_um: float, region_lookup=None):
+            p: MatchParams, tolerance_um: float, region_lookup=None, region_ecd_at=None):
     """Best VHX object per SEM particle. candidates_of(row) -> iterable of (vhx image, predicted position,
     tree, object indices); region_lookup(image, position) -> object indices whose region contains it."""
     out = {k: np.full(n, np.nan) for k in ["distance_um", "score", "second_score", "pred_x_um", "pred_y_um"]}
@@ -218,8 +226,14 @@ def _assign(n: int, rows: np.ndarray, s_ecd: np.ndarray, s_len: np.ndarray, cand
             for j in tree.query_ball_point(pred, r=tol):
                 vj = idx[j]
                 d = float(np.hypot(*(V[vj] - pred)))
-                score = d + p.size_weight_um * abs(np.log(v_ecd[vj] / s_ecd[row])) + p.vhx_border_penalty_um * v_border[vj]
-                cands.append((score, d, vj, img, pred))
+                size_term = abs(np.log(v_ecd[vj] / s_ecd[row]))
+                kind = "object"
+                if region_ecd_at is not None:
+                    re_ = region_ecd_at(vj, pred)              # region ECD if its box contains pred
+                    if re_ is not None and abs(np.log(re_ / s_ecd[row])) < size_term:
+                        size_term, kind = abs(np.log(re_ / s_ecd[row])), "region"
+                score = d + p.size_weight_um * size_term + p.vhx_border_penalty_um * v_border[vj]
+                cands.append((score, d, vj, img, pred, kind))
         if not views:                                      # no VHX image around this position
             out["status"][row] = "outside"
             continue
@@ -253,10 +267,44 @@ def _assign(n: int, rows: np.ndarray, s_ecd: np.ndarray, s_len: np.ndarray, cand
         out["score"][row], out["distance_um"][row] = best[0], best[1]
         out["pred_x_um"][row], out["pred_y_um"][row] = best[4]
         out["idx"][row], out["image"][row] = best[2], best[3]
-        out["match_type"][row] = "object"
+        out["match_type"][row] = best[5]
         if distinct:
             out["second_score"][row] = distinct[0][0]
         out["status"][row] = "ambiguous" if distinct and distinct[0][0] - best[0] < p.ambiguity_margin_um else "matched"
+    return out
+
+
+def _field_rescue(rows, fname, base, near, model, s_ecd, V, v_ecd, trees, by_img, p: MatchParams) -> dict:
+    """Extra shift per SEM field from a vote of its particles: vectors from the predicted
+    position to VHX objects of similar size within ``field_search_um``; the peak needs
+    ``field_min_votes`` different particles (within 1 um). Returns {field: shift}."""
+    z = np.zeros(2)
+    out = {}
+    rows_by_field = pd.Series(rows).groupby(fname[rows]).apply(list)
+    for f, rws in rows_by_field.items():
+        if len(rws) < p.field_min_votes:
+            continue
+        vecs, owner = [], []
+        for row in rws:
+            if not near[row] or near[row][0] not in trees:
+                continue
+            img = near[row][0]
+            pred = base[row] - model["image_err"].get(img, z)
+            for j in trees[img].query_ball_point(pred, r=p.field_search_um):
+                vj = by_img[img][j]
+                if 1 / p.field_size_ratio <= v_ecd[vj] / s_ecd[row] <= p.field_size_ratio:
+                    vecs.append(V[vj] - pred); owner.append(row)
+        if len(set(owner)) < p.field_min_votes:
+            continue
+        vecs, owner = np.array(vecs), np.array(owner)
+        best, best_n = None, 0
+        for v in vecs:                                   # candidate shifts: each vector, count distinct particles within 1 um
+            close = np.hypot(*(vecs - v).T) <= 1.0
+            n = len(set(owner[close]))
+            if n > best_n:
+                best_n, best = n, np.median(vecs[close], axis=0)
+        if best_n >= p.field_min_votes and best_n >= 0.3 * len(rws):
+            out[f] = best
     return out
 
 
@@ -324,7 +372,7 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
                 yield img, R[row] + off, trees[img], by_img[img]
 
     # detected regions (if present) in stage coordinates, per VHX image
-    region_lookup = None
+    region_lookup = region_ecd_at = None
     if "region_bbox_col0" in vhx_obj:
         g = vhx_img.set_index("image").loc[v_img]
         ox = g.stage_x_um.to_numpy() - (g.width_px.to_numpy() - 1) / 2 * g.um_per_px.to_numpy()
@@ -338,6 +386,15 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
         finite = np.isfinite(rc).all(axis=1)
         r_idx = {n: i[finite[i]] for n, i in by_img.items()}
         rtrees = {n: cKDTree(rc[i]) for n, i in r_idx.items() if len(i)}
+
+        r_ecd = vhx_obj.region_ecd_um.to_numpy() if "region_ecd_um" in vhx_obj else None
+
+        def region_ecd_at(vj, pred):
+            if r_ecd is None or not np.isfinite(r_ecd[vj]):
+                return None
+            if rb[vj, 0] <= pred[0] <= rb[vj, 1] and rb[vj, 2] <= pred[1] <= rb[vj, 3]:
+                return r_ecd[vj]
+            return None
 
         def region_lookup(img, pred):
             if img not in rtrees:
@@ -357,6 +414,9 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
                                    ridge=p.model_ridge, outlier_sigma=p.outlier_sigma)
         base = model_base(model, R, UV, fname)
         z = np.zeros(2)
+        rescue = _field_rescue(rows, fname, base, near, model, s_ecd, V, v_ecd, trees, by_img, p)
+        for f, corr in rescue.items():
+            base[fname == f] += corr
 
         def cands_model(row):
             for img in near[row]:
@@ -364,11 +424,13 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
                     yield img, base[row] - model["image_err"].get(img, z), trees[img], by_img[img]
 
         tol = max(p.min_tolerance_um, p.model_tolerance_sigma * float(np.max(model["residual_sd"])))
-        out = _assign(len(R), rows, s_ecd, s_len, cands_model, V, v_ecd, v_border, p, tol, region_lookup)
+        out = _assign(len(R), rows, s_ecd, s_len, cands_model, V, v_ecd, v_border, p, tol, region_lookup,
+                      region_ecd_at)
         history.append({"step": f"model {it + 1}", "fit_matches": model["n_used"],
                         "residual_sd_x": round(float(model["residual_sd"][0]), 3),
                         "residual_sd_y": round(float(model["residual_sd"][1]), 3), "tolerance_um": round(tol, 2),
                         "region_matches": int((out["match_type"] == "region").sum()),
+                        "fields_rescued": int(sum(np.hypot(*c) > tol for c in rescue.values())),
                         **{k: int(v) for k, v in pd.Series(out["status"][rows]).value_counts().items()}})
 
     status = base_status.copy()
