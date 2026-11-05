@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from cii.matching import MatchParams, find_sem_files, load_sem_particles, match
-from cii.matching_figures import bse_paths, overview, verification_sheet
+from cii.matching_figures import bse_paths, overview, resolve_vhx_paths, verification_sheet
 from cii.registration import Transform
 from cii.sem import read_field_positions
 
@@ -63,7 +63,9 @@ def main():
     ap.add_argument("--transform", type=Path, required=True)
     ap.add_argument("--vhx", type=Path, required=True)
     ap.add_argument("--bse", type=Path, help="BSE field images, for the verification figures")
-    ap.add_argument("--vhx-images", type=Path, help="folder of the VHX images if they moved (default: paths in images.csv)")
+    ap.add_argument("--vhx-images", type=Path,
+                    help="folder with the VHX images (searched with subfolders), if they are no longer at the "
+                         "paths stored in images.csv")
     ap.add_argument("-o", "--output", type=Path, default=Path("match"))
     ap.add_argument("--figures", type=int, default=12, help="particles per class and status in the figures (0 = none)")
     ap.add_argument("--only-available", action="store_true",
@@ -121,11 +123,18 @@ def main():
         bse = bse_paths(args.bse)
         rng = np.random.default_rng(args.seed)
         sel = part[part.status.isin(["matched", "ambiguous", "not_found"])]
+        if args.vhx_images is not None and not args.vhx_images.is_dir():
+            raise SystemExit(f"VHX image folder not found: {str(args.vhx_images)!r} (paths with spaces in quotes)")
+        vpaths = resolve_vhx_paths(vi, args.vhx_images)
+        print(f"VHX images: {len(vpaths)} of {len(vi)} found"
+              + (f" in {args.vhx_images}" if args.vhx_images else " at the paths in images.csv"))
+        if len(vpaths) < len(vi):
+            missing = [pth for n, pth in zip(vi.image, vi.path) if n not in vpaths]
+            print(f"  missing e.g. {missing[0]}")
+            if not args.vhx_images:
+                print("  -> the images were moved or renamed after the detection: give their folder with --vhx-images")
         if args.only_available:
-            vdir = args.vhx_images
-            have = {n for n in vi.image if (vdir / n).exists()} if vdir else \
-                   {n for n, pth in zip(vi.image, vi.path) if Path(pth).exists()}
-            sel = sel[sel.field.isin(bse) & sel.vhx_image.isin(have)]
+            sel = sel[sel.field.isin(bse) & sel.vhx_image.isin(vpaths)]
         for cls, g in sel.groupby("class_label"):
             rows = []
             for st in ["matched", "ambiguous", "not_found"]:
@@ -135,7 +144,7 @@ def main():
             rows = pd.concat(rows)
             fn = args.output / "verify" / f"{cls}.png"
             if verification_sheet(rows, vi, bse, fn, f"{cls}: {len(g)} particles", sem_um_per_px=args.sem_px,
-                                  vhx_image_dir=args.vhx_images):
+                                  vhx_paths=vpaths):
                 print(f"  {fn}")
     print(f"-> {args.output}")
 

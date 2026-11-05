@@ -69,6 +69,24 @@ def _load_vhx(path):
     return a[..., :3] if a.ndim == 3 else a
 
 
+def resolve_vhx_paths(vhx_img: pd.DataFrame, folder: Path | None = None) -> dict[str, Path]:
+    """Image name -> existing file: in ``folder`` (searched with subfolders) if given,
+    otherwise at the path stored in images.csv. Missing images are left out."""
+    out = {}
+    if folder is not None:
+        by_name = {}
+        for f in Path(folder).rglob("*"):
+            if f.suffix.lower() in (".tif", ".tiff"):
+                by_name.setdefault(f.name, f)
+        for n in vhx_img.image:
+            if n in by_name:
+                out[n] = by_name[n]
+    for n, pth in zip(vhx_img.image, vhx_img.path):
+        if n not in out and isinstance(pth, str) and Path(pth).exists():
+            out[n] = Path(pth)
+    return out
+
+
 def _crop(img, cx, cy, half_px):
     """Crop around (cx, cy) in pixels, padded with white where outside; returns crop and its origin."""
     h, w = img.shape[:2]
@@ -85,12 +103,13 @@ def _crop(img, cx, cy, half_px):
 
 def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, path: Path, title: str,
                        sem_um_per_px: float = 0.294864, cols: int = 4, min_field_um: float = 10.0,
-                       vhx_image_dir: Path | None = None):
+                       vhx_paths: dict | None = None):
     """One tile pair per SEM particle: BSE (SEM bbox) | VHX at the predicted position (matched object's bbox)."""
     if not len(rows):
         return False
     vi = vhx_img.set_index("image")
-    vpath = lambda n: (vhx_image_dir / n) if vhx_image_dir else Path(vi.loc[n, "path"])
+    vhx_paths = vhx_paths if vhx_paths is not None else resolve_vhx_paths(vhx_img)
+    vpath = lambda n: vhx_paths.get(n)
     bse_cache, vhx_cache = ImageCache(_load_bse), ImageCache(_load_vhx, 4)
     nrow = int(np.ceil(len(rows) / cols))
     fig, axes = plt.subplots(nrow, 2 * cols, figsize=(2 * cols * 1.75, nrow * 2.05), squeeze=False)
@@ -113,7 +132,7 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
             a1.text(0.5, 0.5, "no BSE image", ha="center", va="center", fontsize=6, transform=a1.transAxes)
         # VHX
         name = r.vhx_image if isinstance(r.vhx_image, str) else None
-        if name and name in vi.index and np.isfinite(r.pred_vhx_x_um) and vpath(name).exists():
+        if name and name in vi.index and np.isfinite(r.pred_vhx_x_um) and vpath(name) is not None:
             g = vi.loc[name]
             img = vhx_cache.get(vpath(name))
             px = lambda x, y: ((x - g.stage_x_um) / g.um_per_px + (g.width_px - 1) / 2,
