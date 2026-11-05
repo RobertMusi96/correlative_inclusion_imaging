@@ -3,12 +3,21 @@ light-microscope images.
 
 Method
 ------
-1. Grey image = mean of R, G, B.
-2. Background = median filter over ``background_um`` (computed on a reduced
+1. Background = median filter over ``background_um`` (computed on a reduced
    image for speed), so uneven illumination does not matter.
-3. Contrast = (background - grey) / background, after a slight Gaussian
+2. Contrast = (background - value) / background, after a slight Gaussian
    smoothing (``smooth_px``) against pixel noise. 0 = matrix, 1 = black.
-4. Detection by hysteresis threshold: an object needs a core with contrast
+   ``channels``:
+
+   * ``"max"`` (default): contrast computed for R, G and B separately (each
+     against its own background), the strongest of the three is used: an object
+     is at least X % darker than the matrix in at least one colour. Catches
+     coloured particles (e.g. pink Ti(C,N): darker mainly in green) that the
+     grey mean dilutes. Slightly noisier than the mean.
+   * ``"mean"``: contrast of the grey value (mean of R, G, B), the original method.
+
+   The thresholds default per mode (``DEFAULT_THRESHOLDS``).
+3. Detection by hysteresis threshold: an object needs a core with contrast
    >= ``high`` and grows into connected pixels with contrast >= ``low``.
 5. Size: within each detected object only pixels reaching ``size_fraction``
    (default 0.5, half maximum) of the object's own peak contrast are kept. The
@@ -33,27 +42,43 @@ from skimage.measure import regionprops
 from .geometry import StageImage
 
 
+# (high, low) per contrast mode. "max": noise of the strongest channel is about
+# twice that of the mean (99.9 % of matrix pixels below 0.036 vs 0.019 at 500x),
+# pink particles reach 0.07-0.14 in green at 500x.
+DEFAULT_THRESHOLDS = {"max": (0.07, 0.04), "mean": (0.12, 0.03)}
+
+
 @dataclass
 class DetectionParams:
+    channels: str = "max"         # "max" (strongest of R, G, B) or "mean" (grey)
     background_um: float = 40.0   # median filter size for the background
     smooth_px: float = 1.0        # Gaussian sigma against pixel noise
-    high: float = 0.12            # core contrast (fraction of background)
-    low: float = 0.03             # edge contrast for region growing
+    high: float | None = None     # core contrast (fraction of background); None = default of the mode
+    low: float | None = None      # edge contrast for region growing; None = default of the mode
     size_fraction: float = 0.5    # object outline at this fraction of its peak contrast (0 = off)
     min_area_um2: float = 0.3     # smallest object kept (ECD ~ 0.6 um)
+
+    def __post_init__(self):
+        if self.channels not in DEFAULT_THRESHOLDS:
+            raise ValueError(f"channels must be one of {list(DEFAULT_THRESHOLDS)}, not {self.channels!r}")
+        hi, lo = DEFAULT_THRESHOLDS[self.channels]
+        if self.high is None:
+            self.high = hi
+        if self.low is None:
+            self.low = lo
 
 
 @dataclass
 class Detection:
     labels: np.ndarray            # int32 label image, 0 = matrix
     objects: pd.DataFrame         # one row per object, 'label' matches labels
-    contrast: np.ndarray          # contrast image (float32)
-    background: np.ndarray        # background grey level (float32)
+    contrast: np.ndarray          # contrast image used for detection (float32)
+    background: np.ndarray        # background (grey: H x W, per channel: H x W x 3)
     params: DetectionParams
+    channel_contrast: np.ndarray | None = None   # H x W x 3 contrast per channel (colour images)
 
 
-def background_and_contrast(rgb: np.ndarray, um_per_px: float, p: DetectionParams):
-    g = rgb[..., :3].astype(np.float32).mean(axis=2) if rgb.ndim == 3 else rgb.astype(np.float32)
+def _background(g: np.ndarray, um_per_px: float, p: DetectionParams) -> np.ndarray:
     win_full = p.background_um / um_per_px
     k = max(1, int(np.ceil(win_full / 25)))                    # median window <= ~25 px on the reduced image
     win = max(3, int(round(win_full / k)) | 1)
@@ -62,9 +87,29 @@ def background_and_contrast(rgb: np.ndarray, um_per_px: float, p: DetectionParam
     if k > 1:
         bg = ndi.zoom(bg, (g.shape[0] / small.shape[0], g.shape[1] / small.shape[1]), order=1)
         bg = bg[: g.shape[0], : g.shape[1]]
-    bg = np.maximum(bg, 1.0).astype(np.float32)
+    return np.maximum(bg, 1.0).astype(np.float32)
+
+
+def _contrast(g: np.ndarray, bg: np.ndarray, p: DetectionParams) -> np.ndarray:
     gs = ndi.gaussian_filter(g, p.smooth_px) if p.smooth_px > 0 else g
-    return g, bg, ((bg - gs) / bg).astype(np.float32)
+    return ((bg - gs) / bg).astype(np.float32)
+
+
+def background_and_contrast(rgb: np.ndarray, um_per_px: float, p: DetectionParams):
+    """Grey mean, background and contrast of the grey mean (``channels="mean"``)."""
+    g = rgb[..., :3].astype(np.float32).mean(axis=2) if rgb.ndim == 3 else rgb.astype(np.float32)
+    bg = _background(g, um_per_px, p)
+    return g, bg, _contrast(g, bg, p)
+
+
+def channel_contrasts(rgb: np.ndarray, um_per_px: float, p: DetectionParams):
+    """Background and contrast for R, G and B separately (H x W x 3 each)."""
+    bgs, cs = [], []
+    for k in range(3):
+        ch = rgb[..., k].astype(np.float32)
+        bg = _background(ch, um_per_px, p)
+        bgs.append(bg); cs.append(_contrast(ch, bg, p))
+    return np.stack(bgs, axis=-1), np.stack(cs, axis=-1)
 
 
 def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None = None,
@@ -72,7 +117,14 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
     """Detect dark objects. ``stage`` (optional) adds stage coordinates."""
     p = params or DetectionParams()
     rgb = image
-    g, bg, c = background_and_contrast(rgb, um_per_px, p)
+    colour = rgb.ndim == 3 and rgb.shape[2] >= 3
+    cc = None
+    if colour:
+        bgc, cc = channel_contrasts(rgb, um_per_px, p)
+    if p.channels == "max" and colour:
+        bg, c = bgc, cc.max(axis=2)
+    else:
+        _, bg, c = background_and_contrast(rgb, um_per_px, p)
     min_px = p.min_area_um2 / um_per_px ** 2
     # 1) detection: core >= high, grown into connected pixels >= low; min area applies here
     detected, n = ndi.label(apply_hysteresis_threshold(c, p.low, p.high))
@@ -120,6 +172,11 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
         }
         if px_rgb is not None:
             row.update({"mean_R": px_rgb[:, 0].mean(), "mean_G": px_rgb[:, 1].mean(), "mean_B": px_rgb[:, 2].mean()})
+        if cc is not None:
+            pc = cc[coords[:, 0], coords[:, 1]]
+            row.update({"contrast_R_mean": pc[:, 0].mean(), "contrast_G_mean": pc[:, 1].mean(),
+                        "contrast_B_mean": pc[:, 2].mean(), "contrast_R_max": pc[:, 0].max(),
+                        "contrast_G_max": pc[:, 1].max(), "contrast_B_max": pc[:, 2].max()})
         rows.append(row)
     df = pd.DataFrame(rows)
     if stage is not None and len(df):
@@ -129,7 +186,8 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
     if len(df):
         df = df.sort_values("area_um2", ascending=False).reset_index(drop=True)
         df.insert(0, "id", np.arange(1, len(df) + 1))   # 1 = largest object in the image
-    return Detection(labels=lab.astype(np.int32), objects=df, contrast=c, background=bg, params=p)
+    return Detection(labels=lab.astype(np.int32), objects=df, contrast=c, background=bg, params=p,
+                     channel_contrast=cc)
 
 
 def params_dict(p: DetectionParams) -> dict:

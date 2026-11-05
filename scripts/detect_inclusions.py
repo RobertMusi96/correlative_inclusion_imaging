@@ -10,6 +10,8 @@ paths with spaces in quotes (Windows: "D:\\My data\\500x").
 Example:
     # whole series, tables only, 4 processes
     python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x --no-figures -j 4
+    # original method (grey mean) for comparison
+    python scripts/detect_inclusions.py data/MnB/vhx_500x -o results/detection_500x_mean --no-figures -j 4 --channels mean
     # a few images with review figures
     python scripts/detect_inclusions.py data/MnB/vhx_500x/*_00001*.tif -o results/check_500x
 
@@ -33,7 +35,7 @@ from pathlib import Path
 import pandas as pd
 
 from cii import read_vhx
-from cii.detection import DetectionParams, detect, params_dict
+from cii.detection import DEFAULT_THRESHOLDS, DetectionParams, detect, params_dict
 from cii.detection_figures import save_gallery, save_overlay
 
 
@@ -53,7 +55,7 @@ def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery
             "n_ecd_ge_1um": int((obj.ecd_um >= 1).sum()) if n else 0, "saturated_pct": sat}
     if figures:
         title = (f"{path.stem}  ·  {img.magnification:g}x  ·  {n} objects  ·  "
-                 f"high {p.high}, low {p.low}, size {p.size_fraction}, min {p.min_area_um2} µm²")
+                 f"{p.channels}, high {p.high}, low {p.low}, size {p.size_fraction}, min {p.min_area_um2} µm²")
         save_overlay(rgb, det, output / "overlay" / f"{path.stem}.png", um_per_px=img.um_per_px, title=title)
         save_gallery(rgb, det, img.um_per_px, output / "gallery" / f"{path.stem}.png",
                      max_objects=gallery_max, title=title)
@@ -85,8 +87,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("images", nargs="+", help="image files, folders or patterns such as \"D:\\data\\500x\\*.tif\"")
     ap.add_argument("-o", "--output", type=Path, default=Path("detection"))
-    ap.add_argument("--high", type=float, default=d.high, help=f"core contrast (default {d.high})")
-    ap.add_argument("--low", type=float, default=d.low, help=f"edge contrast (default {d.low})")
+    ap.add_argument("--channels", choices=list(DEFAULT_THRESHOLDS), default=d.channels,
+                    help="contrast: 'max' = strongest of R, G, B (default), 'mean' = grey mean (original method)")
+    ap.add_argument("--high", type=float, default=None,
+                    help="core contrast (default: " + ", ".join(f"{k} {v[0]}" for k, v in DEFAULT_THRESHOLDS.items()) + ")")
+    ap.add_argument("--low", type=float, default=None,
+                    help="edge contrast (default: " + ", ".join(f"{k} {v[1]}" for k, v in DEFAULT_THRESHOLDS.items()) + ")")
     ap.add_argument("--size-fraction", type=float, default=d.size_fraction,
                     help=f"outline at this fraction of the object's peak contrast, 0 = off (default {d.size_fraction})")
     ap.add_argument("--min-area", type=float, default=d.min_area_um2, help=f"um2 (default {d.min_area_um2})")
@@ -96,7 +102,7 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=1, help="parallel processes (default 1)")
     args = ap.parse_args()
 
-    p = DetectionParams(background_um=args.background, high=args.high, low=args.low,
+    p = DetectionParams(channels=args.channels, background_um=args.background, high=args.high, low=args.low,
                         size_fraction=args.size_fraction, min_area_um2=args.min_area)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "parameters.json").write_text(json.dumps(params_dict(p), indent=2))

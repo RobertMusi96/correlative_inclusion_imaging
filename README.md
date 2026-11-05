@@ -106,10 +106,24 @@ from the others), writes the transform as JSON. `--model affine` for an affine f
 ### `scripts/detect_inclusions.py`
 
 Detection of dark objects in VHX bright-field images (`cii.detection`):
-background by median filter (40 µm), contrast = (background - grey) / background,
-hysteresis threshold (core >= 0.12, edge >= 0.03), object outline at half of the
-object's own peak contrast (`size_fraction`, makes sizes independent of blur),
-minimum area 0.3 µm² (applied to the detected object).
+background by median filter (40 µm), contrast = (background - value) / background,
+hysteresis threshold (core >= `high`, grown into pixels >= `low`), object outline
+at half of the object's own peak contrast (`size_fraction`, makes sizes
+independent of blur), minimum area 0.3 µm² (applied to the detected object).
+
+Contrast modes (`--channels`):
+
+| mode | contrast | default high / low | use |
+| --- | --- | --- | --- |
+| `max` (default) | R, G, B separately, strongest of the three | 0.07 / 0.04 | also catches coloured particles that are darker in one colour only (pink Ti(C,N): mainly green) |
+| `mean` | grey value (mean of R, G, B), original method | 0.12 / 0.03 | dark/grey particles; fewer faint objects |
+
+`max` also finds many sub-µm violet dots (~1000/mm², about 0.6 µm at 1000x,
+shown as ~1.05 µm at 500x because of blur) and faint polishing scratches;
+they are below the SEM limit and drop out in the SEM matching. A clipped
+channel (blue at 255 in 91 % of the pixels at 500x) carries no contrast:
+record with the matrix at about 180-200. The per-channel contrast of every
+object is stored (`contrast_R/G/B_mean`, `contrast_R/G/B_max`).
 
 ```bash
 # whole series: tables only, 4 parallel processes (~2 s per image and process)
@@ -163,6 +177,11 @@ within 5-7 % (half-maximum outline), positions within 0.25 µm after an offset
 of 4.3-6.6 µm (X) / -1.1-+0.9 µm (Y) per image pair (objective offset + stage).
 Objects of 0.6-0.8 µm: 63 % found at 500x, 0.4-0.6 µm: 6 %.
 Images were overexposed (14-35 % of pixels at 255 in R, G and B).
+Whole area (864 images 1000x, 247 images 500x, mean mode): objects >= 1 µm found
+at 500x in 94 %, dark ones (contrast >= 0.3) in 97-99 %; misses are faint
+features (73 % with contrast < 0.2), a polishing scratch, and dust that moved
+between the series. Offset between the series 7.2 / -2.0 µm, changing with Y
+(~0.5 / -0.7 µm per mm, drift during acquisition), per-image scatter ~0.9 µm.
 
 ## Roadmap
 
