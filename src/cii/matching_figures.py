@@ -152,7 +152,7 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
         else:
             a2.text(0.5, 0.5, "no VHX image", ha="center", va="center", fontsize=6, transform=a2.transAxes)
         typ = r.Type if isinstance(r.Type, str) else r.class_label
-        a1.set_title(f"#{r.sem_id} {typ}\nSEM {r.ecd_um:.2f} µm", fontsize=6)
+        a1.set_title(f"[{k + 1}]  #{r.sem_id} {typ}\nSEM {r.ecd_um:.2f} µm", fontsize=6)
         if r.status in ("matched", "ambiguous"):
             region = getattr(r, "match_type", "") == "region"
             vtxt = (f"VHX region {r.vhx_region_ecd_um:.2f} µm" if region else f"VHX {r.vhx_ecd_um:.2f} µm") + f", d {r.distance_um:.1f}"

@@ -55,6 +55,49 @@ def summaries(part: pd.DataFrame):
     return t, s
 
 
+VERDICTS = {
+    "ok": "matched/ambiguous: the VHX box marks the same particle as the BSE box (position, shape, size)",
+    "wrong": "matched/ambiguous: the box marks another object; the SEM particle is elsewhere or not visible",
+    "invisible": "not_found: nothing visible at the + in the VHX crop",
+    "missed": "not_found: the particle is clearly visible at or near the + but was not matched",
+    "unclear": "cannot decide",
+}
+
+
+def write_review(rows: pd.DataFrame, path: Path):
+    """Excel table of the particles on the sheets, with a drop-down column 'verdict'."""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    cols = ["sheet", "tile", "sem_id", "class_label", "Type", "status", "match_type", "ecd_um", "vhx_ecd_um",
+            "distance_um", "vhx_image", "field"]
+    t = rows[[c for c in cols if c in rows]].copy()
+    for c in ["ecd_um", "vhx_ecd_um", "distance_um"]:
+        if c in t:
+            t[c] = t[c].round(2)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "review"
+    header = list(t.columns) + ["verdict", "comment"]
+    ws.append(header)
+    for r in t.itertuples(index=False):
+        ws.append([None if (isinstance(v, float) and np.isnan(v)) else v for v in r] + [None, None])
+    col = header.index("verdict") + 1
+    letter = ws.cell(row=1, column=col).column_letter
+    dv = DataValidation(type="list", formula1='"' + ",".join(VERDICTS) + '"', allow_blank=True)
+    ws.add_data_validation(dv)
+    dv.add(f"{letter}2:{letter}{len(t) + 1}")
+    ws.freeze_panes = "A2"
+    for c in ws.columns:
+        ws.column_dimensions[c[0].column_letter].width = max(9, min(28, max(len(str(x.value or "")) for x in c) + 2))
+    info = wb.create_sheet("verdicts")
+    info.append(["verdict", "use for"])
+    for k, v in VERDICTS.items():
+        info.append([k, v])
+    info.column_dimensions["B"].width = 95
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+
+
 def main():
     d = MatchParams()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -135,6 +178,7 @@ def main():
                 print("  -> the images were moved or renamed after the detection: give their folder with --vhx-images")
         if args.only_available:
             sel = sel[sel.field.isin(bse) & sel.vhx_image.isin(vpaths)]
+        review = []
         for cls, g in sel.groupby("class_label"):
             rows = []
             for st in ["matched", "ambiguous", "not_found"]:
@@ -146,6 +190,10 @@ def main():
             if verification_sheet(rows, vi, bse, fn, f"{cls}: {len(g)} particles", sem_um_per_px=args.sem_px,
                                   vhx_paths=vpaths):
                 print(f"  {fn}")
+                review.append(rows.assign(sheet=f"{cls}.png", tile=np.arange(1, len(rows) + 1)))
+        if review:
+            write_review(pd.concat(review), args.output / "verify" / "review.xlsx")
+            print(f"  {args.output / 'verify' / 'review.xlsx'}  (fill in the column 'verdict')")
     print(f"-> {args.output}")
 
 
