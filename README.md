@@ -112,23 +112,44 @@ object's own peak contrast (`size_fraction`, makes sizes independent of blur),
 minimum area 0.3 µm² (applied to the detected object).
 
 ```bash
-python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x
+# whole series: tables only, 4 parallel processes (~2 s per image and process)
+python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x --no-figures -j 4
+# a few images with review figures (same parameters -> same objects)
+python scripts/detect_inclusions.py data/MnB/vhx_500x/*_00001*.tif -o results/check_500x
 ```
 
 Writes `objects.csv` (pixel and stage coordinates, area, ECD, shape, contrast,
-colour, border flag), `parameters.json`, and per image `overlay/<image>.png`
-(full resolution, objects orange, border objects blue, IDs) and
-`gallery/<image>.png` (one tile per object, largest first).
+colour, border flag), `images.csv` (path, stage position, size, object count and
+saturated share per image), `parameters.json`, and per image (unless
+`--no-figures`) `overlay/<image>.png` (full resolution, objects orange, border
+objects blue, IDs) and `gallery/<image>.png` (one tile per object, largest first).
+Use one output folder per series / magnification.
 
 ### `scripts/compare_magnifications.py`
 
-Checks the detection with images of the same area at two magnifications:
-objects of the higher magnification are searched at the lower one (offset per
-image pair), reported per size class as share found and size ratio.
+Checks the detection with two series of the same area at different
+magnifications: objects of the higher magnification are searched among the
+objects of the lower one (`cii.compare`). Works on whole series:
+
+* offset per overlapping image pair (objective offset + stage error of both
+  images), estimated from the objects; pairs with too few objects get it from a
+  model with one stage error per image; offsets contradicting the model are
+  re-estimated;
+* objects seen in two overlapping images of the reference series are counted
+  once (the most central view); border objects are skipped;
+* the expected rate of random matches is printed (density x match circle).
 
 ```bash
-python scripts/compare_magnifications.py results/detection_1000x/objects.csv results/detection_500x/objects.csv
+python scripts/compare_magnifications.py results/detection_1000x results/detection_500x \
+    -o results/compare_1000x_500x --missed-crops 80
 ```
+
+Writes `summary.csv` (share found and size ratio per ECD class), `objects.csv`
+(every reference object with status found / missed / border / duplicate /
+outside and its match), `offsets.csv` (per image pair), `comparison.png` (found
+share per class and map of the missed objects >= 1 µm) and with
+`--missed-crops N` `missed.png` (the N largest missed objects, both
+magnifications side by side at the expected position).
 
 ## Results so far
 
