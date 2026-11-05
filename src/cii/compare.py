@@ -183,7 +183,7 @@ def _fit_pair_model(offsets: pd.DataFrame, g: np.ndarray):
 def compare(ref_obj: pd.DataFrame, ref_img: pd.DataFrame, oth_obj: pd.DataFrame, oth_img: pd.DataFrame,
             tolerance: float = 2.5, offset_min_ecd: float = 0.8, global_search_um: float = 40.0,
             pair_search_um: float = 15.0, min_pairs: int = 3, coverage_margin_um: float = 3.0,
-            outlier_um: float = 1.5) -> Comparison:
+            outlier_um: float = 1.5, global_prior=None) -> Comparison:
     ref = ref_obj.reset_index(drop=True).copy()
     oth = oth_obj.reset_index(drop=True)
     rr, orr = image_rects(ref_img), image_rects(oth_img)
@@ -204,7 +204,7 @@ def compare(ref_obj: pd.DataFrame, ref_img: pd.DataFrame, oth_obj: pd.DataFrame,
     r_big = (ref.ecd_um.to_numpy() >= offset_min_ecd) & ~r_border
     o_big = (oth.ecd_um.to_numpy() >= 0.8 * offset_min_ecd) & ~o_border
 
-    g, n_g = estimate_offset(R[r_big & (status != "duplicate")], O[o_big], search_um=global_search_um,
+    g, n_g = estimate_offset(R[r_big & (status != "duplicate")], O[o_big], prior=global_prior, search_um=global_search_um,
                              bin_um=2.0, refine_um=4.0, iterations=6, min_pairs=min_pairs)
     if g is None:
         raise RuntimeError("no common offset found - do the two detections cover the same area?")

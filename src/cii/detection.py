@@ -25,6 +25,11 @@ Method
    between magnifications; weakly joined neighbours are split.
 6. Objects smaller than ``min_area_um2`` are dropped.
 
+Every object also carries its *region* (``region_*`` columns): the full
+hysteresis-detected area it was cut from. A region can hold several objects
+(e.g. two touching particles) or be much larger than its object (a faint
+particle with a very dark spot: the half-maximum cut keeps only the spot).
+
 All size parameters are in um, so one parameter set works at every magnification.
 No classification here: every dark object is reported; which ones are
 inclusions is decided later (SEM correlation).
@@ -150,6 +155,15 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
     else:
         lab = detected
     h, w = lab.shape
+    region = {}
+    if n_det := int(detected.max()):
+        for r in regionprops(detected):
+            r0, c0, r1, c1 = r.bbox
+            region[r.label] = {"region_area_um2": r.area * um_per_px ** 2,
+                               "region_ecd_um": 2 * np.sqrt(r.area * um_per_px ** 2 / np.pi),
+                               "region_col_px": r.centroid[1], "region_row_px": r.centroid[0],
+                               "region_bbox_row0": r0, "region_bbox_col0": c0,
+                               "region_bbox_row1": r1, "region_bbox_col1": c1}
     rows = []
     for r in regionprops(lab, intensity_image=c):
         r0, c0, r1, c1 = r.bbox
@@ -172,6 +186,9 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
         }
         if px_rgb is not None:
             row.update({"mean_R": px_rgb[:, 0].mean(), "mean_G": px_rgb[:, 1].mean(), "mean_B": px_rgb[:, 2].mean()})
+        reg_id = int(detected[coords[0, 0], coords[0, 1]])
+        row["region"] = reg_id
+        row.update(region.get(reg_id, {}))
         if cc is not None:
             pc = cc[coords[:, 0], coords[:, 1]]
             row.update({"contrast_R_mean": pc[:, 0].mean(), "contrast_G_mean": pc[:, 1].mean(),
@@ -186,6 +203,7 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
     if len(df):
         df = df.sort_values("area_um2", ascending=False).reset_index(drop=True)
         df.insert(0, "id", np.arange(1, len(df) + 1))   # 1 = largest object in the image
+        df["region_n_objects"] = df.groupby("region").id.transform("size")
     return Detection(labels=lab.astype(np.int32), objects=df, contrast=c, background=bg, params=p,
                      channel_contrast=cc)
 

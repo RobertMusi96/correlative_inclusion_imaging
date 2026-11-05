@@ -165,6 +165,38 @@ share per class and map of the missed objects >= 1 µm) and with
 `--missed-crops N` `missed.png` (the N largest missed objects, both
 magnifications side by side at the expected position).
 
+### `scripts/match_sem_vhx.py`
+
+Assigns every SEM/EDS particle (AZtec feature analysis) its VHX object
+(`cii.matching`). Put the AZtec exports (`*_pre.xlsx`, `*_pre_rejected.xlsx`,
+`*_pre_corr_typified.xlsx`, `*_pre_corr_not-typified.xlsx`, optionally
+`*_pre_corr.xlsx`) and the field table (`*field_information*.csv`) into one folder.
+
+```bash
+python scripts/match_sem_vhx.py --sem data/MnB/sem --transform results/vhx_to_sem.json \
+    --vhx results/detection_500x --bse data/MnB/sem/images -o results/match_500x
+```
+
+1. SEM positions from the particle list -> VHX coordinates with the indent transform.
+2. Coarse offset by a vote of large particles (the series objective is offset
+   against the indent objective: 100x/200x vs 500x about 132 µm).
+3. First alignment per (SEM field, VHX image) pair; SEM particles in two
+   overlapping fields counted once; particles at a SEM field border skipped.
+4. Position model fitted to the matches and matching repeated (3x): offset,
+   linear trend over the sample, scale/rotation within the SEM field, one stage
+   error per SEM field and per VHX image. Match radius afterwards 4 x residual sd
+   (~1.5 µm) + 0.25 x SEM particle length.
+5. Best VHX object by distance + size difference; second object close in score
+   -> `ambiguous`; no object close but inside a detected VHX region (faint
+   particle with a dark spot, particle merged with a neighbour) -> matched with
+   `match_type = region` (needs the `region_*` columns, detection from Nov 2026 on).
+
+Outputs: `matches.csv` (one row per SEM particle: label, Class, Type, status
+matched / ambiguous / not_found / outside / sem_border / sem_duplicate, VHX
+object, distance, sizes, colour), `summary_by_class.csv`, `summary_by_size.csv`,
+`model.json`, `history.csv`, `overview.png` and `verify/<class>.png` (BSE crop
+with SEM bounding box next to the VHX crop at the predicted position).
+
 ## Results so far
 
 MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:
@@ -190,9 +222,18 @@ finds 2.4x more objects at 1000x and 3x more at 500x (1565/mm², chance of a
 random match within 2.5 µm about 3 %); 500x outlines are ~5-10 % larger than
 in mean mode.
 
+SEM <-> VHX 500x (channel max, 9011 SEM particles, 30 Oct / 2 Nov 2026):
+offset of the 500x series against the indent transform -132 / +11.5 µm
+(objective change), position model residual 0.37 µm per axis, SEM field
+scale +1.1 % (x) / +1.45 % (y) and ~0.35 deg rotation relative to the stage.
+SEM particles inside the VHX area with a VHX object: N 90 %, OS 89 %, NS 84 %,
+O 78 %, S 73 %, not typified 66 %, rejected 52 %; typified >= 2 µm about 94 %.
+Chance of a random object within the match radius ~3 % (null test).
+Nitrides appear green-dominant (pink) in 92 % of the matches, oxides in 5 %.
+
 ## Roadmap
 
 1. SEM/EDS particle list import with stage X/Y per particle.
 2. Refine the VHX -> SEM transform with inclusion centroids (done: indent-based transform).
-3. Matching of VHX detections to SEM particles (done: VHX detection).
+3. Matching of VHX detections to SEM particles (done).
 4. Dataset export (image crops + SEM class) for training.
