@@ -7,4 +7,4 @@ from .vhx import VHXImage, read_vhx
 
 __all__ = ["StageImage", "VHXImage", "read_vhx", "SEMImage", "read_aztec_tiff", "read_field_positions",
            "find_marking", "locate_indent", "Transform", "fit_similarity", "fit_affine"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
