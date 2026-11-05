@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -65,44 +64,23 @@ VERDICTS = {
 }
 
 
-def sample_key(sem_id: np.ndarray, seed: int) -> np.ndarray:
-    """Pseudo-random but fixed order per particle: the same particles are drawn in every run
-    (as long as their status is the same); another --seed gives another sample."""
-    x = (sem_id.astype(np.uint64) * np.uint64(2654435761) + np.uint64(seed) * np.uint64(40503)) % np.uint64(2 ** 32)
-    return (x ^ (x >> np.uint64(13))) * np.uint64(1274126177) % np.uint64(2 ** 32)
-
-
-def write_review(rows: pd.DataFrame, path: Path, run_id: str) -> Path:
-    """Excel table of the particles on the sheets (same order and tile numbers), with a
-    drop-down column 'verdict'. Verdicts already entered in an existing review.xlsx are
-    carried over (by sem_id); if the file is open in Excel a new file is written."""
+def write_review(rows: pd.DataFrame, path: Path):
+    """Excel table of the particles on the sheets, with a drop-down column 'verdict'."""
     from openpyxl import Workbook
     from openpyxl.worksheet.datavalidation import DataValidation
-    old = {}
-    if path.exists():
-        try:
-            prev = pd.read_excel(path, sheet_name="review")
-            prev = prev[prev.verdict.notna() | prev.comment.notna()]
-            old = {int(r.sem_id): (r.verdict, r.comment) for r in prev.itertuples()}
-        except Exception as e:                                   # unreadable: start fresh
-            print(f"  could not read the existing {path.name} ({e}); verdicts not carried over")
     cols = ["sheet", "tile", "sem_id", "class_label", "Type", "status", "match_type", "ecd_um", "vhx_ecd_um",
             "distance_um", "vhx_image", "field"]
     t = rows[[c for c in cols if c in rows]].copy()
     for c in ["ecd_um", "vhx_ecd_um", "distance_um"]:
         if c in t:
             t[c] = t[c].round(2)
-    clean = lambda v: None if (v is None or (isinstance(v, float) and np.isnan(v))) else v
     wb = Workbook()
     ws = wb.active
     ws.title = "review"
     header = list(t.columns) + ["verdict", "comment"]
     ws.append(header)
-    carried = 0
     for r in t.itertuples(index=False):
-        v, c = old.get(int(r.sem_id), (None, None))
-        carried += v is not None and not (isinstance(v, float) and np.isnan(v))
-        ws.append([clean(x) for x in r] + [clean(v), clean(c)])
+        ws.append([None if (isinstance(v, float) and np.isnan(v)) else v for v in r] + [None, None])
     col = header.index("verdict") + 1
     letter = ws.cell(row=1, column=col).column_letter
     dv = DataValidation(type="list", formula1='"' + ",".join(VERDICTS) + '"', allow_blank=True)
@@ -112,22 +90,12 @@ def write_review(rows: pd.DataFrame, path: Path, run_id: str) -> Path:
     for c in ws.columns:
         ws.column_dimensions[c[0].column_letter].width = max(9, min(28, max(len(str(x.value or "")) for x in c) + 2))
     info = wb.create_sheet("verdicts")
-    info.append(["run", run_id, "the sheets verify/*.png of the same run show this time in their title"])
-    info.append([])
     info.append(["verdict", "use for"])
     for k, v in VERDICTS.items():
         info.append([k, v])
     info.column_dimensions["B"].width = 95
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        wb.save(path)
-    except PermissionError:                                      # open in Excel
-        path = path.with_name(f"review_{run_id.replace(' ', '_').replace(':', '')}.xlsx")
-        wb.save(path)
-        print(f"  review.xlsx is open in another program - written to {path.name} instead")
-    if old:
-        print(f"  verdicts carried over from the previous review: {carried} of {len(old)}")
-    return path
+    wb.save(path)
 
 
 def main():
@@ -150,9 +118,8 @@ def main():
                     help=f"score per e-fold size difference, um (default {d.size_weight_um})")
     ap.add_argument("--iterations", type=int, default=d.iterations)
     ap.add_argument("--sem-px", type=float, default=0.294864, help="SEM pixel size, um (default 0.294864)")
-    ap.add_argument("--seed", type=int, default=0, help="another sample of particles for the sheets")
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
-    run_id = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     files = find_sem_files(args.sem)
     fields_csv = args.fields or next(iter(sorted(args.sem.glob("*field_information*.csv"))), None)
@@ -197,6 +164,7 @@ def main():
         if not args.bse.is_dir():
             raise SystemExit(f"BSE folder not found: {str(args.bse)!r} (paths with spaces in quotes)")
         bse = bse_paths(args.bse)
+        rng = np.random.default_rng(args.seed)
         sel = part[part.status.isin(["matched", "ambiguous", "not_found"])]
         if args.vhx_images is not None and not args.vhx_images.is_dir():
             raise SystemExit(f"VHX image folder not found: {str(args.vhx_images)!r} (paths with spaces in quotes)")
@@ -216,17 +184,16 @@ def main():
             for st in ["matched", "ambiguous", "not_found"]:
                 s = g[g.status == st]
                 if len(s):
-                    rows.append(s.iloc[np.argsort(sample_key(s.sem_id.to_numpy(), args.seed), kind="stable")[: args.figures]]
-                                .sort_values(["ecd_um", "sem_id"], ascending=[False, True]))
+                    rows.append(s.iloc[rng.permutation(len(s))[: args.figures]].sort_values("ecd_um", ascending=False))
             rows = pd.concat(rows)
             fn = args.output / "verify" / f"{cls}.png"
-            if verification_sheet(rows, vi, bse, fn, f"{cls}: {len(g)} particles  ·  run {run_id}",
-                                  sem_um_per_px=args.sem_px, vhx_paths=vpaths):
+            if verification_sheet(rows, vi, bse, fn, f"{cls}: {len(g)} particles", sem_um_per_px=args.sem_px,
+                                  vhx_paths=vpaths):
                 print(f"  {fn}")
                 review.append(rows.assign(sheet=f"{cls}.png", tile=np.arange(1, len(rows) + 1)))
         if review:
-            path = write_review(pd.concat(review), args.output / "verify" / "review.xlsx", run_id)
-            print(f"  {path}  (fill in the column 'verdict'; run {run_id})")
+            write_review(pd.concat(review), args.output / "verify" / "review.xlsx")
+            print(f"  {args.output / 'verify' / 'review.xlsx'}  (fill in the column 'verdict')")
     print(f"-> {args.output}")
 
 
