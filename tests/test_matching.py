@@ -87,15 +87,16 @@ def test_matching_finds_visible_particles_and_right_objects():
 def test_relaxed_pass_and_cluster_flags():
     sem, fields, T, vo, vi, truth = scene(seed=2)
     # three large particles: their VHX view shifted by 3 um (leftover local error) -> only the relaxed pass finds them
-    big = sem.index[:3]
-    sem.loc[big, ["ecd_um", "length_um"]] = [[3.0, 3.6]] * 3
+    vis = truth.vis.to_numpy()[sem.sem_id.to_numpy()]
+    big = sem.index[vis][:6]
+    sem.loc[big, ["ecd_um", "length_um"]] = [[3.0, 3.6]] * len(big)
     for k in big:
         t = sem.at[k, "sem_id"]
         vo.loc[vo.truth == t, "stage_x_um"] += 3.0
         vo.loc[vo.truth == t, "ecd_um"] = 3.1
-        truth.loc[t, "vis"] = True
     r = match(sem, fields, T, vo, vi)
     P = r.particles.set_index("sem_id")
+    assert (r.particles.match_type == "relaxed").sum() >= 1
     for k in big:
         row = P.loc[sem.at[k, "sem_id"]]
         if row.status in ("outside", "sem_border", "sem_duplicate"):
