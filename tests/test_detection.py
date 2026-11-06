@@ -66,3 +66,16 @@ def test_default_thresholds_per_mode():
     assert (DetectionParams().high, DetectionParams().low) == (0.07, 0.04)
     assert (DetectionParams(channels="mean").high, DetectionParams(channels="mean").low) == (0.12, 0.03)
     assert DetectionParams(channels="mean", high=0.1).high == 0.1
+
+
+def test_label_images_roundtrip(tmp_path):
+    from cii.detection import read_label_images, save_label_images
+    rgb, _ = synthetic()
+    det = detect(rgb, 0.2)
+    save_label_images(det, tmp_path, "img")
+    obj, reg = read_label_images(tmp_path, "img")
+    assert np.array_equal(obj, det.labels) and np.array_equal(reg, det.regions)
+    o = det.objects.iloc[0]
+    mask = obj == o.label
+    assert mask.sum() == o.area_px
+    assert (reg[mask] == o.region).all()          # the object lies inside its region

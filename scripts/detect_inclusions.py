@@ -19,6 +19,8 @@ Outputs in the output folder:
     objects.csv             all objects of all images (column 'image')
     images.csv              one row per image: path, stage position, size, object count
     parameters.json         detection parameters used
+    labels/<image>_objects.png  16-bit label image of the object outlines (pixel value = column 'label')
+    labels/<image>_regions.png  16-bit label image of the detected regions (pixel value = column 'region')
     overlay/<image>.png     image with segmented objects (orange; blue = touches border)
     gallery/<image>.png     one tile per object, largest first
 
@@ -35,11 +37,11 @@ from pathlib import Path
 import pandas as pd
 
 from cii import read_vhx
-from cii.detection import DEFAULT_THRESHOLDS, DetectionParams, detect, params_dict
+from cii.detection import DEFAULT_THRESHOLDS, DetectionParams, detect, params_dict, save_label_images
 from cii.detection_figures import save_gallery, save_overlay
 
 
-def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery_max: int):
+def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery_max: int, labels: bool = True):
     img = read_vhx(path)
     rgb = img.read_image()
     det = detect(rgb, img.um_per_px, p, stage=img)
@@ -53,6 +55,8 @@ def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery
             "um_per_px": img.um_per_px, "width_px": img.width, "height_px": img.height,
             "stage_x_um": img.stage_x, "stage_y_um": img.stage_y, "n_objects": n,
             "n_ecd_ge_1um": int((obj.ecd_um >= 1).sum()) if n else 0, "saturated_pct": sat}
+    if labels:
+        save_label_images(det, output / "labels", path.stem)
     if figures:
         title = (f"{path.stem}  ·  {img.magnification:g}x  ·  {n} objects  ·  "
                  f"{p.channels}, high {p.high}, low {p.low}, size {p.size_fraction}, min {p.min_area_um2} µm²")
@@ -99,6 +103,8 @@ def main():
     ap.add_argument("--background", type=float, default=d.background_um, help=f"um (default {d.background_um})")
     ap.add_argument("--no-figures", action="store_true", help="tables only (recommended for whole series)")
     ap.add_argument("--gallery-max", type=int, default=300)
+    ap.add_argument("--no-labels", action="store_true",
+                    help="do not write the label images (labels/<image>_objects.png, _regions.png)")
     ap.add_argument("-j", "--jobs", type=int, default=1, help="parallel processes (default 1)")
     args = ap.parse_args()
 
@@ -108,7 +114,7 @@ def main():
     (args.output / "parameters.json").write_text(json.dumps(params_dict(p), indent=2))
     paths = expand_images(args.images)
     print(f"{len(paths)} images")
-    work = [(path, p, args.output, not args.no_figures, args.gallery_max) for path in paths]
+    work = [(path, p, args.output, not args.no_figures, args.gallery_max, not args.no_labels) for path in paths]
     tables, infos = [], []
     if args.jobs > 1:
         with ProcessPoolExecutor(args.jobs) as ex:

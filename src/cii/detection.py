@@ -81,6 +81,7 @@ class Detection:
     background: np.ndarray        # background (grey: H x W, per channel: H x W x 3)
     params: DetectionParams
     channel_contrast: np.ndarray | None = None   # H x W x 3 contrast per channel (colour images)
+    regions: np.ndarray | None = None            # int32 label image of the detected regions, 'region' matches it
 
 
 def _background(g: np.ndarray, um_per_px: float, p: DetectionParams) -> np.ndarray:
@@ -205,8 +206,34 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
         df.insert(0, "id", np.arange(1, len(df) + 1))   # 1 = largest object in the image
         df["region_n_objects"] = df.groupby("region").id.transform("size")
     return Detection(labels=lab.astype(np.int32), objects=df, contrast=c, background=bg, params=p,
-                     channel_contrast=cc)
+                     channel_contrast=cc, regions=detected.astype(np.int32))
 
 
 def params_dict(p: DetectionParams) -> dict:
     return asdict(p)
+
+
+def save_label_images(det: Detection, folder, stem: str):
+    """Writes <stem>_objects.png (object outlines, values = column 'label') and
+    <stem>_regions.png (detected regions, values = column 'region') as 16-bit PNG."""
+    from pathlib import Path
+    from PIL import Image
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, img in [("objects", det.labels), ("regions", det.regions)]:
+        if img is None:
+            continue
+        if img.max() > 65535:
+            raise ValueError(f"more than 65535 {name} in {stem}")
+        Image.fromarray(img.astype(np.uint16)).save(folder / f"{stem}_{name}.png", optimize=True)
+
+
+def read_label_images(folder, stem: str):
+    """(object label image, region label image) written by save_label_images; None if missing."""
+    from pathlib import Path
+    from PIL import Image
+    out = []
+    for name in ("objects", "regions"):
+        f = Path(folder) / f"{stem}_{name}.png"
+        out.append(np.asarray(Image.open(f)).astype(np.int32) if f.exists() else None)
+    return tuple(out)

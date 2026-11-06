@@ -135,6 +135,10 @@ colour, border flag), `images.csv` (path, stage position, size, object count and
 saturated share per image), `parameters.json`, and per image (unless
 `--no-figures`) `overlay/<image>.png` (full resolution, objects orange, border
 objects blue, IDs) and `gallery/<image>.png` (one tile per object, largest first).
+`labels/<image>_objects.png` and `labels/<image>_regions.png` are 16-bit label
+images (pixel value = `label` resp. `region` column of objects.csv; 0 = matrix),
+~30 KB each: the masks of every object and region (`cii.detection.read_label_images`).
+`--no-labels` skips them.
 Use one output folder per series / magnification.
 
 ### `scripts/compare_magnifications.py`
