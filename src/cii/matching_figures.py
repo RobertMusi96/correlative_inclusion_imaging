@@ -153,12 +153,15 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
             a2.text(0.5, 0.5, "no VHX image", ha="center", va="center", fontsize=6, transform=a2.transAxes)
         typ = r.Type if isinstance(r.Type, str) else r.class_label
         a1.set_title(f"[{k + 1}]  #{r.sem_id} {typ}\nSEM {r.ecd_um:.2f} µm", fontsize=6)
+        mt = getattr(r, "match_type", "")
         if r.status in ("matched", "ambiguous"):
-            region = getattr(r, "match_type", "") == "region"
-            vtxt = (f"VHX region {r.vhx_region_ecd_um:.2f} µm" if region else f"VHX {r.vhx_ecd_um:.2f} µm") + f", d {r.distance_um:.1f}"
+            vtxt = (f"VHX region {r.vhx_region_ecd_um:.2f} µm" if mt == "region" else f"VHX {r.vhx_ecd_um:.2f} µm") + f", d {r.distance_um:.1f}"
         else:
             vtxt = "no object"
-        a2.set_title(f"{r.status}{' (region)' if getattr(r, 'match_type', '') == 'region' else ''}\n{vtxt}", fontsize=6, color=col)
+        tag = f" ({mt})" if mt in ("region", "relaxed") else ""
+        if getattr(r, "cluster", False) is True:
+            tag += " · cluster"
+        a2.set_title(f"{r.status}{tag}\n{vtxt}", fontsize=6, color=col)
     fig.suptitle(title + "  (left BSE with SEM bbox, right VHX at predicted position +, matched object box; "
                  "dashed = detected region; field 2.6 x ECD, at least 10 µm)", fontsize=8)
     fig.tight_layout(rect=(0, 0, 1, 0.98))

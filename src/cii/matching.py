@@ -35,6 +35,17 @@ Steps
    vote of the shifts between the field's particles and VHX objects of similar
    size; at least ``field_min_votes`` particles must agree.
 
+7. Relaxed pass for large particles still not found (SEM ECD >= ``relaxed_min_ecd``):
+   accepted if exactly one VHX object of similar size (``relaxed_size_range``),
+   not used by another match, lies within ``relaxed_radius_um`` of the prediction
+   (leftover local position error of a few um) -> ``match_type = 'relaxed'``.
+8. Cluster flag (``cluster``, ``cluster_reason``) for matches that are unreliable
+   as training labels: VHX object shared by several SEM particles ('shared'), VHX
+   object or region much larger than the SEM particle ('vhx_larger'), region
+   match on a region holding several objects ('merged_region'). Informational
+   only: ``sem_neighbour`` (another SEM particle touching or nearly touching).
+   ``training_ok`` = matched and not cluster.
+
 Status per SEM particle: matched, ambiguous, not_found, outside (not covered by
 the VHX images), sem_border, sem_duplicate. ``vhx_shared``: the VHX object was
 assigned to more than one SEM particle (cluster resolved by SEM only).
@@ -136,6 +147,11 @@ class MatchParams:
     field_search_um: float = 8.0          # per-field rescue: shift search radius
     field_min_votes: int = 2              # particles of the field that must agree on the shift
     field_size_ratio: float = 2.5         # objects used for the vote: size within this factor of the SEM ECD
+    relaxed_min_ecd: float | None = 2.0   # relaxed pass for not found particles from this SEM ECD (None = off)
+    relaxed_radius_um: float = 4.5
+    relaxed_size_range: tuple = (0.6, 1.7)  # VHX ECD / SEM ECD
+    cluster_size_ratio: float = 2.0       # VHX object (or region) ECD > this x SEM ECD -> cluster
+    cluster_gap_um: float = 1.0           # SEM particles closer than (ECD1 + ECD2)/2 + gap -> cluster
     model_ridge: float = 1.0              # weight pulling per-field / per-image errors to 0
     outlier_sigma: float = 3.0            # matches with larger model residual are not used for the fit
 
@@ -308,6 +324,78 @@ def _field_rescue(rows, fname, base, near, model, s_ecd, V, v_ecd, trees, by_img
     return out
 
 
+def _relaxed_pass(out: dict, rows, s_ecd, cands_of, V, v_ecd, v_border, p: MatchParams) -> int:
+    """Not found particles >= relaxed_min_ecd: the only free VHX object of similar size within
+    relaxed_radius_um is taken (largest particles first). Changes ``out`` in place."""
+    done = np.isin(out["status"], ["matched", "ambiguous"]) & (out["idx"] >= 0)
+    used = [V[i] for i in out["idx"][done]]
+    lo, hi = p.relaxed_size_range
+    todo = [r for r in rows if out["status"][r] == "not_found" and s_ecd[r] >= p.relaxed_min_ecd]
+    n = 0
+    for row in sorted(todo, key=lambda r: -s_ecd[r]):
+        used_tree = cKDTree(np.array(used)) if used else None
+        cands = []
+        for img, pred, tree, idx in cands_of(row):
+            for j in tree.query_ball_point(pred, r=p.relaxed_radius_um):
+                vj = idx[j]
+                if v_border[vj] or not lo <= v_ecd[vj] / s_ecd[row] <= hi:
+                    continue
+                if used_tree is not None and used_tree.query(V[vj])[0] <= p.same_object_um:
+                    continue
+                cands.append((float(np.hypot(*(V[vj] - pred))), vj, img, pred))
+        groups = []                                         # distinct objects (views in overlapping images = one)
+        for c in sorted(cands, key=lambda t: t[0]):
+            rel = V[c[1]] - c[3]
+            if all(np.hypot(*(rel - g[0])) > p.same_object_um for g in groups):
+                groups.append((rel, c))
+        if len(groups) != 1:
+            continue
+        d, vj, img, pred = groups[0][1]
+        out["status"][row], out["match_type"][row] = "matched", "relaxed"
+        out["distance_um"][row], out["idx"][row], out["image"][row] = d, vj, img
+        out["pred_x_um"][row], out["pred_y_um"][row] = pred
+        out["n_candidates"][row] = 1
+        used.append(V[vj])
+        n += 1
+    return n
+
+
+def _cluster_flags(part: pd.DataFrame, p: MatchParams):
+    """Adds cluster, cluster_reason, sem_neighbour and training_ok (see module docstring)."""
+    is_match = part.status.isin(["matched", "ambiguous"]).to_numpy()
+    eff = part.vhx_ecd_um.to_numpy(float).copy()
+    if "vhx_region_ecd_um" in part:
+        reg = (part.match_type == "region").to_numpy()
+        eff[reg] = part.vhx_region_ecd_um.to_numpy(float)[reg]
+    reasons = {
+        "shared": part.vhx_shared.to_numpy(bool),
+        "vhx_larger": is_match & (eff > p.cluster_size_ratio * part.ecd_um.to_numpy()),
+        "merged_region": is_match & (part.match_type == "region").to_numpy()
+                         & (part.get("vhx_region_n_objects", pd.Series(1, index=part.index)).fillna(1).to_numpy() > 1),
+    }
+    # SEM particles touching or nearly touching another one (same SEM stage coordinates)
+    ok = ~part.status.isin(["sem_duplicate", "sem_border"]).to_numpy()
+    xy = part[["stage_x_um", "stage_y_um"]].to_numpy()
+    e = part.ecd_um.to_numpy()
+    neigh = np.zeros(len(part), bool)
+    idx = np.flatnonzero(ok)
+    if len(idx) > 1:
+        tree = cKDTree(xy[idx])
+        for a, b in tree.query_pairs(r=float(e[idx].max()) + p.cluster_gap_um):
+            i, j = idx[a], idx[b]
+            if np.hypot(*(xy[i] - xy[j])) < (e[i] + e[j]) / 2 + p.cluster_gap_um:
+                neigh[i] = neigh[j] = True
+    part["sem_neighbour"] = neigh            # informational: a second SEM particle (nearly) touching this one
+    flag = np.zeros(len(part), bool)
+    text = np.full(len(part), "", dtype=object)
+    for name, m in reasons.items():
+        flag |= m
+        text[m] = [t + ("," if t else "") + name for t in text[m]]
+    part["cluster"] = flag
+    part["cluster_reason"] = text
+    part["training_ok"] = (part.status == "matched").to_numpy() & ~flag
+
+
 def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_obj: pd.DataFrame,
           vhx_img: pd.DataFrame, sem_um_per_px: float = 0.294864, params: MatchParams | None = None,
           field_size_px: tuple[int, int] = (1024, 768)) -> MatchResult:
@@ -433,6 +521,12 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
                         "fields_rescued": int(sum(np.hypot(*c) > tol for c in rescue.values())),
                         **{k: int(v) for k, v in pd.Series(out["status"][rows]).value_counts().items()}})
 
+    n_relaxed = 0
+    if model and p.relaxed_min_ecd is not None:
+        n_relaxed = _relaxed_pass(out, rows, s_ecd, cands_model, V, v_ecd, v_border, p)
+        history.append({"step": "relaxed", "relaxed_matches": n_relaxed,
+                        **{k: int(v) for k, v in pd.Series(out["status"][rows]).value_counts().items()}})
+
     status = base_status.copy()
     status[rows] = out["status"][rows]
     part = sem.reset_index(drop=True).copy()
@@ -455,10 +549,11 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
     part["vhx_y_um"] = np.where(has, V[np.maximum(idx, 0), 1], np.nan)
     part["distance_um"], part["score"], part["second_score"] = out["distance_um"], out["score"], out["second_score"]
     part["n_candidates"] = out["n_candidates"]
-    part["match_type"] = out["match_type"]                 # object (centroid within radius) or region
+    part["match_type"] = out["match_type"]                 # object (centroid within radius), region or relaxed
     part["size_ratio"] = part.vhx_ecd_um / part.ecd_um
     key = part.vhx_image.astype(str) + "#" + part.vhx_id.astype(str)
     part["vhx_shared"] = has & key.duplicated(keep=False).to_numpy()
+    _cluster_flags(part, p)
     offsets = res.offsets.rename(columns={"ref_image": "sem_field", "other_image": "vhx_image"})
     return MatchResult(particles=part, offsets=offsets, coarse_offset=coarse, coarse_votes=n_coarse,
                        model=model or {}, history=history)

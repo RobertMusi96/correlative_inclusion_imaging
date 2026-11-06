@@ -23,6 +23,10 @@ Outputs in the output folder:
     overview.png           share found per class and size
     verify/<class>.png     BSE | VHX crops for a sample of matched, ambiguous and not found particles
 Status: matched, ambiguous, not_found, outside (no VHX image), sem_border, sem_duplicate.
+match_type: object, region, relaxed (large particle, second pass with larger radius).
+cluster / cluster_reason: match unreliable as training label (shared VHX object, VHX
+much larger, merged region); training_ok = matched and not cluster. sem_neighbour:
+another SEM particle (nearly) touching (information only).
 """
 from __future__ import annotations
 
@@ -48,6 +52,11 @@ def summaries(part: pd.DataFrame):
     m = part[part.status == "matched"]
     t["median_distance_um"] = m.groupby("class_label").distance_um.median().round(2)
     t["median_size_ratio"] = m.groupby("class_label").size_ratio.median().round(2)
+    if "match_type" in part:
+        t["relaxed"] = m[m.match_type == "relaxed"].groupby("class_label").size().reindex(t.index).fillna(0).astype(int)
+    if "cluster" in part:
+        t["cluster"] = part[part.cluster].groupby("class_label").size().reindex(t.index).fillna(0).astype(int)
+        t["training_ok"] = part[part.training_ok].groupby("class_label").size().reindex(t.index).fillna(0).astype(int)
     c = part[part.status.isin(["matched", "ambiguous", "not_found"])]
     bins = [1, 1.5, 2, 3, 5, 10, 1000]
     s = (c.groupby(["label", pd.cut(c.ecd_um, bins)], observed=True).status
@@ -86,7 +95,7 @@ def write_review(rows: pd.DataFrame, path: Path, run_id: str) -> Path:
             old = {int(r.sem_id): (r.verdict, r.comment) for r in prev.itertuples()}
         except Exception as e:                                   # unreadable: start fresh
             print(f"  could not read the existing {path.name} ({e}); verdicts not carried over")
-    cols = ["sheet", "tile", "sem_id", "class_label", "Type", "status", "match_type", "ecd_um", "vhx_ecd_um",
+    cols = ["sheet", "tile", "sem_id", "class_label", "Type", "status", "match_type", "cluster_reason", "ecd_um", "vhx_ecd_um",
             "distance_um", "vhx_image", "field"]
     t = rows[[c for c in cols if c in rows]].copy()
     for c in ["ecd_um", "vhx_ecd_um", "distance_um"]:
@@ -191,6 +200,10 @@ def main():
               f"(um per mm): {M['M'].round(2).tolist()}")
     print(by_class.to_string())
     print(f"VHX objects shared by several SEM particles: {int(part.vhx_shared.sum())} SEM particles")
+    if "cluster" in part:
+        rs = part.cluster_reason[part.cluster].str.split(",").explode().value_counts()
+        print(f"cluster flags: {int(part.cluster.sum())} matches ({', '.join(f'{k} {v}' for k, v in rs.items())}); "
+              f"training_ok: {int(part.training_ok.sum())}")
     overview(part, args.output / "overview.png")
 
     if args.figures and args.bse:

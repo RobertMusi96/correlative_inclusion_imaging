@@ -82,3 +82,28 @@ def test_matching_finds_visible_particles_and_right_objects():
     got = vt.loc[list(zip(m.vhx_image, m.vhx_id.astype(int)))].to_numpy()
     assert (got == m.sem_id.to_numpy()).mean() > 0.99
     assert r.model["residual_sd"].max() < 0.5
+
+
+def test_relaxed_pass_and_cluster_flags():
+    sem, fields, T, vo, vi, truth = scene(seed=2)
+    # three large particles: their VHX view shifted by 3 um (leftover local error) -> only the relaxed pass finds them
+    big = sem.index[:3]
+    sem.loc[big, ["ecd_um", "length_um"]] = [[3.0, 3.6]] * 3
+    for k in big:
+        t = sem.at[k, "sem_id"]
+        vo.loc[vo.truth == t, "stage_x_um"] += 3.0
+        vo.loc[vo.truth == t, "ecd_um"] = 3.1
+        truth.loc[t, "vis"] = True
+    r = match(sem, fields, T, vo, vi)
+    P = r.particles.set_index("sem_id")
+    for k in big:
+        row = P.loc[sem.at[k, "sem_id"]]
+        if row.status in ("outside", "sem_border", "sem_duplicate"):
+            continue
+        assert row.status == "matched" and row.match_type in ("relaxed", "object")
+    assert {"cluster", "cluster_reason", "training_ok", "sem_neighbour"} <= set(r.particles.columns)
+    tr = r.particles[r.particles.training_ok]
+    assert (tr.status == "matched").all() and not tr.cluster.any()
+    off = MatchParams(relaxed_min_ecd=None)
+    r2 = match(sem, fields, T, vo, vi, params=off)
+    assert (r2.particles.match_type == "relaxed").sum() == 0

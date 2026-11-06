@@ -195,6 +195,14 @@ python scripts/match_sem_vhx.py --sem data/MnB/sem --transform results/vhx_to_se
    particle better (large particle whose outline kept only a dark spot). Needs the
    `region_*` columns: rerun detect_inclusions.py with version >= 0.3.0.
 
+6. Relaxed pass: large particles (SEM ECD >= 2 µm) still not found take the only
+   free VHX object of similar size (0.6-1.7 x) within 4.5 µm (`match_type =
+   relaxed`; null test ~3 % random among them).
+7. Cluster flag: `cluster` / `cluster_reason` for matches unreliable as training
+   labels (VHX object shared by several SEM particles, VHX object/region > 2x the
+   SEM particle, merged region); `training_ok` = matched and not cluster.
+   `sem_neighbour` (another SEM particle within 1 µm) is information only.
+
 Outputs: `matches.csv` (one row per SEM particle: label, Class, Type, status
 matched / ambiguous / not_found / outside / sem_border / sem_duplicate, VHX
 object, distance, sizes, colour), `summary_by_class.csv`, `summary_by_size.csv`,
@@ -234,6 +242,10 @@ SEM particles inside the VHX area with a VHX object: N 90 %, OS 89 %, NS 84 %,
 O 78 %, S 73 %, not typified 66 %, rejected 52 %; typified >= 2 µm about 94 %.
 Chance of a random object within the match radius ~2 % (null test).
 Nitrides appear green-dominant (pink) in 92 % of the matches, oxides in 5 %.
+Manual review of 210 particles (sheets of 6 Nov 2026): 124 of 128 matches correct
+(3.1 %, 95 % CI 0.9-7.8 %), all 4 errors clusters or split inclusions; of 82 not
+found, 70 not visible in the VHX image (mostly < 2 µm), 12 missed (6 of 9 at
+>= 2 µm), all with the VHX object 1.7-4.4 µm off -> relaxed pass and cluster flag.
 
 ## Roadmap
 
