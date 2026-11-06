@@ -31,6 +31,10 @@ Steps
    magnification), that object is taken with ``match_type = 'region'``. The
    region is also preferred when its size fits the SEM particle better than the
    object's (a large particle whose half-maximum outline kept only a dark spot).
+   A region is only used if it is plausible for the SEM particle: its ECD within
+   ``region_size_range`` x the SEM ECD, its box not much longer than the particle
+   (``region_max_side``) and not mostly empty (``region_min_fill``; a diagonal
+   scratch has a huge, empty box).
    Fields whose stage error the model misses (few matches): per-field rescue, a
    vote of the shifts between the field's particles and VHX objects of similar
    size; at least ``field_min_votes`` particles must agree.
@@ -144,6 +148,9 @@ class MatchParams:
     model_tolerance_sigma: float = 3.0    # match radius after the model fit, in residual sd
     min_tolerance_um: float = 1.0
     region_margin_um: float = 0.5         # predicted position inside a VHX region bbox (+ margin)
+    region_size_range: tuple = (0.5, 2.5)   # region ECD / SEM ECD for a region to be used
+    region_max_side: tuple = (8.0, 2.5)     # region box side <= max(um, factor x SEM length)
+    region_min_fill: float = 0.25           # region area / box area (rejects long diagonal scratches)
     field_search_um: float = 8.0          # per-field rescue: shift search radius
     field_min_votes: int = 2              # particles of the field that must agree on the shift
     field_size_ratio: float = 2.5         # objects used for the vote: size within this factor of the SEM ECD
@@ -245,7 +252,7 @@ def _assign(n: int, rows: np.ndarray, s_ecd: np.ndarray, s_len: np.ndarray, cand
                 size_term = abs(np.log(v_ecd[vj] / s_ecd[row]))
                 kind = "object"
                 if region_ecd_at is not None:
-                    re_ = region_ecd_at(vj, pred)              # region ECD if its box contains pred
+                    re_ = region_ecd_at(vj, pred, s_ecd[row], s_len[row])   # region ECD if plausible and its box contains pred
                     if re_ is not None and abs(np.log(re_ / s_ecd[row])) < size_term:
                         size_term, kind = abs(np.log(re_ / s_ecd[row])), "region"
                 score = d + p.size_weight_um * size_term + p.vhx_border_penalty_um * v_border[vj]
@@ -255,7 +262,7 @@ def _assign(n: int, rows: np.ndarray, s_ecd: np.ndarray, s_len: np.ndarray, cand
             continue
         if not cands and region_lookup is not None:
             for img, pred in views:                        # most central image first
-                hits = region_lookup(img, pred)
+                hits = region_lookup(img, pred, s_ecd[row], s_len[row])
                 if len(hits):
                     vj = min(hits, key=lambda j: np.hypot(*(V[j] - pred)))
                     d = float(np.hypot(*(V[vj] - pred)))
@@ -475,21 +482,30 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
         r_idx = {n: i[finite[i]] for n, i in by_img.items()}
         rtrees = {n: cKDTree(rc[i]) for n, i in r_idx.items() if len(i)}
 
-        r_ecd = vhx_obj.region_ecd_um.to_numpy() if "region_ecd_um" in vhx_obj else None
+        r_ecd = vhx_obj.region_ecd_um.to_numpy() if "region_ecd_um" in vhx_obj else np.full(len(vhx_obj), np.nan)
+        r_side = np.fmax(rb[:, 1] - rb[:, 0], rb[:, 3] - rb[:, 2]) - 2 * m
+        r_fill = (np.pi * r_ecd ** 2 / 4) / np.maximum((rb[:, 1] - rb[:, 0] - 2 * m) * (rb[:, 3] - rb[:, 2] - 2 * m), 1e-6)
 
-        def region_ecd_at(vj, pred):
-            if r_ecd is None or not np.isfinite(r_ecd[vj]):
+        def region_ok(idx, ecd, length):
+            lo, hi = p.region_size_range
+            ratio = r_ecd[idx] / ecd
+            return ((ratio >= lo) & (ratio <= hi) & (r_side[idx] <= max(p.region_max_side[0], p.region_max_side[1] * length))
+                    & (r_fill[idx] >= p.region_min_fill))
+
+        def region_ecd_at(vj, pred, ecd, length):
+            if not np.isfinite(r_ecd[vj]):
                 return None
-            if rb[vj, 0] <= pred[0] <= rb[vj, 1] and rb[vj, 2] <= pred[1] <= rb[vj, 3]:
+            if rb[vj, 0] <= pred[0] <= rb[vj, 1] and rb[vj, 2] <= pred[1] <= rb[vj, 3] and region_ok(vj, ecd, length):
                 return r_ecd[vj]
             return None
 
-        def region_lookup(img, pred):
+        def region_lookup(img, pred, ecd, length):
             if img not in rtrees:
                 return []
             idx = r_idx[img][rtrees[img].query_ball_point(pred, r=rreach)]
             inside = (rb[idx, 0] <= pred[0]) & (pred[0] <= rb[idx, 1]) & (rb[idx, 2] <= pred[1]) & (pred[1] <= rb[idx, 3])
-            return idx[inside]
+            idx = idx[inside]
+            return idx[region_ok(idx, ecd, length)]
 
     out = _assign(len(R), rows, s_ecd, s_len, cands_pairs, V, v_ecd, v_border, p, p.tolerance_um)
     history = [{"step": "pair offsets", **{k: int(v) for k, v in pd.Series(out["status"][rows]).value_counts().items()}}]

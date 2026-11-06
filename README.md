@@ -191,7 +191,8 @@ python scripts/match_sem_vhx.py --sem data/MnB/sem --transform results/vhx_to_se
 5. Best VHX object by distance + size difference; second object close in score
    -> `ambiguous`; no object close but inside a detected VHX region (faint
    particle with a dark spot, particle merged with a neighbour) -> matched with
-   `match_type = region`; the region is also preferred when its size fits the SEM
+   `match_type = region`, if the region is plausible for the SEM particle (ECD
+   0.5-2.5 x, box side <= max(8 µm, 2.5 x length), area >= 25 % of its box); the region is also preferred when its size fits the SEM
    particle better (large particle whose outline kept only a dark spot). Needs the
    `region_*` columns: rerun detect_inclusions.py with version >= 0.3.0.
 
