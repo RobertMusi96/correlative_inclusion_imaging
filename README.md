@@ -211,6 +211,19 @@ object, distance, sizes, colour), `summary_by_class.csv`, `summary_by_size.csv`,
 `model.json`, `history.csv`, `overview.png` and `verify/<class>.png` (BSE crop
 with SEM bounding box next to the VHX crop at the predicted position).
 
+### `scripts/make_class_table.py`
+
+Class table for the training classes: one row per SEM Type (plus not typified
+and rejected) with counts (particles, in VHX area, found %, training_ok), median
+ECD and the typical composition. Fill in the yellow column `training_class`;
+Types with the same class are merged, empty rows stay out of the training data.
+
+```bash
+python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_MnB.xlsx
+# update (new matching / new sample), keeping the entered classes:
+python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_v2.xlsx --previous classes/classes_MnB.xlsx
+```
+
 ## Results so far
 
 MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:
