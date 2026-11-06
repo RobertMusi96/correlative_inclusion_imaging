@@ -80,11 +80,9 @@ indents between instruments is `Indent_<word>` from the file name.
 
 ```bash
 # light microscope
-python scripts/locate_indents.py data/MnB/vhx_indents -o vhx_indents.csv \
-    --figures figures --check data/MnB/vhx_indents/Indent_botleft_200x.tif
+python scripts/locate_indents.py data/MnB/vhx_indents -o vhx_indents.csv --figures figures --check data/MnB/vhx_indents/Indent_botleft_200x.tif
 # SEM
-python scripts/locate_indents.py data/MnB/sem_indents --instrument sem \
-    --fields data/MnB/field_information.csv -o sem_indents.csv --figures figures
+python scripts/locate_indents.py data/MnB/sem_indents --instrument sem --fields data/MnB/field_information.csv -o sem_indents.csv --figures figures
 ```
 
 Segmentation: VHX - centroid of the dark cavity; SEM (BSE) - convex hull of the
@@ -173,8 +171,7 @@ Assigns every SEM/EDS particle (AZtec feature analysis) its VHX object
 `*_pre_corr.xlsx`) and the field table (`*field_information*.csv`) into one folder.
 
 ```bash
-python scripts/match_sem_vhx.py --sem data/MnB/sem --transform results/vhx_to_sem.json \
-    --vhx results/detection_500x --bse data/MnB/sem/images -o results/match_500x
+python scripts/match_sem_vhx.py --sem data/feature --transform data/results/vhx_to_sem.json --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images" -o data/results/sem_match_500x_brightfield_3
 ```
 
 1. SEM positions from the particle list -> VHX coordinates with the indent transform.
