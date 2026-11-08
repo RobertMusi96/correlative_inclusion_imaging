@@ -235,7 +235,7 @@ SEM particle with `training_ok` and a training class (Type table, rules,
 `min_ecd_um`).
 
 ```bash
-python scripts/export_dataset.py --matches data/results/sem_match_500x/matches.csv --classes data/datasets/classes_v1.xlsx --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --sample MnB
+uv run python scripts/export_dataset.py --matches data/results/sem_match_500x_brightfield_3/matches.csv --classes data/datasets/classes_v1.xlsx --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --sample 20261030-MnB
 ```
 
 Writes `data/datasets/dataset_v1/` (name from the class file): `crops/` (96 x 96 px
