@@ -177,9 +177,11 @@ def export_dataset(particles: pd.DataFrame, vhx_obj: pd.DataFrame, vhx_img: pd.D
             c0, r0 = crop_window(cc, rr, p.crop_px, w, h)
             crop = rgb[r0:r0 + p.crop_px, c0:c0 + p.crop_px]
             mask = (mask_full[r0:r0 + p.crop_px, c0:c0 + p.crop_px] == mask_kind).astype(np.uint8) * 255
+
             name = f"{sample}_{int(r.sem_id)}.png"
             Image.fromarray(np.ascontiguousarray(crop)).save(out_dir / "crops" / name)
             Image.fromarray(mask).save(out_dir / "masks" / name)
+
             row = {"crop": f"crops/{name}", "mask": f"masks/{name}", "sample": sample}
             row.update({dst: r[src] for src, dst in COPY_COLUMNS.items() if src in r})
             row.update({"mask_source": "region" if r.match_type == "region" else "object",
