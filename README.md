@@ -217,10 +217,14 @@ Class table for the training classes: one row per SEM Type (plus not typified
 and rejected) with counts (particles, in VHX area, found %, training_ok), median
 ECD and the typical composition. Fill in the yellow column `training_class`;
 Types with the same class are merged, empty rows stay out of the training data.
+Further sheets: `rules` (corrections by composition after the Type table, e.g.
+`rejected` + `Ti_wt >= 1` -> TiN), `settings` (`min_ecd_um`, smallest SEM ECD
+used) and `summary` (what table, rules and settings do to the original classes:
+original class -> training class, and particles per step).
 
 ```bash
 python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_MnB.xlsx
-# update (new matching / new sample), keeping the entered classes:
+# update (new matching / new sample, or after editing rules/settings), keeping classes, rules and settings:
 python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_v2.xlsx --previous classes/classes_MnB.xlsx
 ```
 
