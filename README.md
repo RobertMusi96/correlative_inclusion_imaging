@@ -228,6 +228,28 @@ uv run python scripts/make_class_table.py data/results/sem_match_500x_brightfiel
 uv run python scripts/make_class_table.py data/results/sem_match_500x_brightfield_3/matches.csv -o data/datasets/classes_v2.xlsx --previous data/datasets/classes_v1.xlsx
 ```
 
+### `scripts/export_dataset.py`
+
+Training dataset from the matching and a class file: one VHX crop and mask per
+SEM particle with `training_ok` and a training class (Type table, rules,
+`min_ecd_um`).
+
+```bash
+python scripts/export_dataset.py --matches data/results/sem_match_500x/matches.csv --classes data/datasets/classes_v1.xlsx --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --sample MnB
+```
+
+Writes `data/datasets/dataset_v1/` (name from the class file): `crops/` (96 x 96 px
+RGB at full resolution, ~20 µm at 500x, centred on the matched VHX object),
+`masks/` (255 = particle: object, or region for region matches, from the label
+images of the detection), `dataset.csv` (one row per crop: files, ids, training
+class and its source, match info, crop position, sizes, VHX colour, EDS, `block`,
+`split`, `fold`), a copy of the class file and `dataset_info.json`.
+Split: particles grouped in 1 mm blocks; stratified group k-fold holds out ~20 %
+as `test`; the rest (`trainval`) gets `fold` 0-4 for cross-validation (one fold
+validation, the others training), `fold` -1 for test. The matched object is
+checked by position against objects.csv (ids of equally large objects may differ
+between detection runs; since version 0.3.0 equal areas are ordered by position).
+
 ## Results so far
 
 MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:

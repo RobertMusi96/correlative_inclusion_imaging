@@ -17,6 +17,7 @@ dependencies = [
     "pandas",
     "openpyxl",      # reading the AZtec Excel exports (pandas.read_excel)
     "matplotlib",
+    "scikit-learn",  # stratified group k-fold for the dataset split
 ]
 
 [project.optional-dependencies]

@@ -207,7 +207,9 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
         df.insert(3, "stage_x_um", x)
         df.insert(4, "stage_y_um", y)
     if len(df):
-        df = df.sort_values("area_um2", ascending=False).reset_index(drop=True)
+        # largest first; equal areas ordered by position, so the numbering is the same on every computer
+        df = df.sort_values(["area_px", "row_px", "col_px"], ascending=[False, True, True],
+                            kind="mergesort").reset_index(drop=True)
         df.insert(0, "id", np.arange(1, len(df) + 1))   # 1 = largest object in the image
         df["region_n_objects"] = df.groupby("region").id.transform("size")
     return Detection(labels=lab.astype(np.int32), objects=df, contrast=c, background=bg, params=p,
