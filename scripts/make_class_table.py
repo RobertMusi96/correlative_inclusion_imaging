@@ -13,9 +13,9 @@ Example:
 
 Several matches.csv (several samples) can be given; the table then covers all of them.
 The file also holds the sheets 'rules' (corrections by composition, e.g. rejected
-with Ti_wt >= 1 -> TiN), 'settings' (min_ecd_um) and 'summary' (what all of this
-does to the original classes); --previous keeps rules and settings. Editing them
-in Excel and rerunning with --previous refreshes the summary.
+with Ti_wt >= 1 -> TiN) and 'settings' (min_ecd_um); --previous keeps them. The
+script prints how many particles of each original class end up in which
+training class.
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ from cii.classes import (apply_classes, class_summary, make_class_table, read_cl
 
 
 def main():
+    """Builds the class table from matches.csv (keeping entries of --previous), writes it and
+    prints the overview original class -> training class."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("matches", type=Path, nargs="+", help="matches.csv of match_sem_vhx.py")
     ap.add_argument("-o", "--output", type=Path, default=Path("classes.xlsx"))
@@ -45,7 +47,7 @@ def main():
     assigned = apply_classes(parts, t, rules, settings)
     summ = class_summary(parts, assigned)
     try:
-        write_class_table(t, args.output, rules, settings, summ)
+        write_class_table(t, args.output, rules, settings)
     except PermissionError:
         raise SystemExit(f"{args.output} is open in another program - close it and run again")
     filled = (t.training_class != "").sum()

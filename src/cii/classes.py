@@ -19,8 +19,8 @@ Besides the Type table the file can hold
 * sheet ``settings``: ``min_ecd_um`` (SEM ECD; smaller particles not used).
 
 ``apply_classes`` returns training_class and ``class_source`` per particle
-(type table / rule <id> / below min_ecd / no class), ``class_summary`` the
-overview original class -> training class.
+(type table / rule <id> / below min_ecd / no class); ``class_summary`` counts
+original class -> training class (printed by make_class_table.py).
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ USER_COLUMNS = ["training_class", "comment"]
 
 
 def _key(df: pd.DataFrame) -> pd.Series:
+    """Row key 'class_label|Type' (Type empty for not typified / rejected), used to look up
+    a particle's row in the class table and to carry entries over between table versions."""
     t = df["Type"].where(df["Type"].notna() & (df["Type"].astype(str) != "nan"), "")
     return df["class_label"].astype(str) + "|" + t.astype(str)
 
@@ -85,7 +87,9 @@ def make_class_table(particles: pd.DataFrame, previous: pd.DataFrame | None = No
 
 
 def write_class_table(table: pd.DataFrame, path: Path, rules: pd.DataFrame | None = None,
-                      settings: dict | None = None, summary: dict | None = None):
+                      settings: dict | None = None):
+    """Writes the class file: sheet 'classes' (Type table, user columns marked yellow),
+    'rules' (empty template if no rules), 'settings' (min_ecd_um) and 'help'."""
     from openpyxl.styles import PatternFill
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,14 +115,6 @@ def write_class_table(table: pd.DataFrame, path: Path, rules: pd.DataFrame | Non
                       "meaning": ["SEM ECD in um; smaller particles are not used for training (0 = all)"]}
                      ).to_excel(xw, sheet_name="settings", index=False)
         xw.sheets["settings"].column_dimensions["C"].width = 70
-        if summary:
-            row = 0
-            for name, tab in summary.items():
-                pd.DataFrame({name: [f"{name} (particles with training_ok; computed when the file was written)"]}
-                             ).to_excel(xw, sheet_name="summary", startrow=row, index=False, header=False)
-                tab.to_excel(xw, sheet_name="summary", startrow=row + 1)
-                row += len(tab) + 4
-            xw.sheets["summary"].column_dimensions["A"].width = 28
         info = xw.book.create_sheet("help")
         for line in [
             ["One row per SEM Type (Class/Type from *_pre_corr_typified.xlsx); not typified and rejected particles one row each."],
@@ -131,13 +127,13 @@ def write_class_table(table: pd.DataFrame, path: Path, rules: pd.DataFrame | Non
             ["  select the particles (empty = all), condition e.g. 'Ti_wt >= 1' or 'Ti_wt >= 1 and ecd_um < 3'"],
             ["  (columns of matches.csv; operators >= <= > < == != joined by 'and'); training_class empty = not used."],
             ["Sheet 'settings': min_ecd_um = smallest SEM ECD used for training (applied last)."],
-            ["Sheet 'summary': what the table, rules and settings do to the original classes (rewritten by the script)."],
         ]:
             info.append(line)
         info.column_dimensions["A"].width = 120
 
 
 def read_class_table(path: Path) -> pd.DataFrame:
+    """Reads sheet 'classes' of a class file; empty Type and training_class cells become ''."""
     t = pd.read_excel(path, sheet_name="classes", dtype={"Type": str, "training_class": str, "comment": str})
     t["Type"] = t["Type"].where(t["Type"].notna(), "")
     t["training_class"] = t["training_class"].where(t["training_class"].notna(), "").astype(str).str.strip()
@@ -161,6 +157,7 @@ def read_rules(path: Path) -> pd.DataFrame:
 
 
 def read_settings(path: Path) -> dict:
+    """Reads sheet 'settings' (setting / value); missing sheet or settings keep their defaults."""
     out = dict(DEFAULT_SETTINGS)
     try:
         s = pd.read_excel(path, sheet_name="settings", dtype={"setting": str})

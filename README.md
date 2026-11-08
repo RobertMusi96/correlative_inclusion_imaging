@@ -219,8 +219,8 @@ ECD and the typical composition. Fill in the yellow column `training_class`;
 Types with the same class are merged, empty rows stay out of the training data.
 Further sheets: `rules` (corrections by composition after the Type table, e.g.
 `rejected` + `Ti_wt >= 1` -> TiN), `settings` (`min_ecd_um`, smallest SEM ECD
-used) and `summary` (what table, rules and settings do to the original classes:
-original class -> training class, and particles per step).
+used). The script prints how many particles of each original class end up in
+which training class.
 
 ```bash
 python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_MnB.xlsx
