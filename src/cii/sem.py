@@ -64,6 +64,7 @@ def field_id_from_name(name) -> int | None:
 
 
 def _parse_aztec_tag(text: str) -> dict:
+    """AZtec TIFF tag 50684 ('key=value' lines) as a dict of strings."""
     out = {}
     for line in text.splitlines():
         if "=" in line:

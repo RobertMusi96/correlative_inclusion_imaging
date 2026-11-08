@@ -137,6 +137,7 @@ class Comparison:
 
 
 def _overlapping_pairs(ra: pd.DataFrame, rb: pd.DataFrame, margin: float):
+    """All pairs (image of ra, image of rb) whose stage rectangles overlap, with the rectangles enlarged by margin (um)."""
     a = ra[["x0", "x1", "y0", "y1"]].to_numpy()[:, None, :]
     b = rb[["x0", "x1", "y0", "y1"]].to_numpy()[None, :, :]
     ov = ((a[..., 0] < b[..., 1] + margin) & (b[..., 0] < a[..., 1] + margin)
@@ -184,6 +185,10 @@ def compare(ref_obj: pd.DataFrame, ref_img: pd.DataFrame, oth_obj: pd.DataFrame,
             tolerance: float = 2.5, offset_min_ecd: float = 0.8, global_search_um: float = 40.0,
             pair_search_um: float = 15.0, min_pairs: int = 3, coverage_margin_um: float = 3.0,
             outlier_um: float = 1.5, global_prior=None) -> Comparison:
+    """Compares two detections of the same area (see module docstring): marks border, duplicate and outside
+    reference objects, estimates the offset per overlapping image pair (global vote, pair estimate, per-image
+    stage-error model, outlier re-estimation) and finds each reference object's best match in the other
+    detection. Returns the reference objects with status and match, the pair offsets and the model scatter."""
     ref = ref_obj.reset_index(drop=True).copy()
     oth = oth_obj.reset_index(drop=True)
     rr, orr = image_rects(ref_img), image_rects(oth_img)

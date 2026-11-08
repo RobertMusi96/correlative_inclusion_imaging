@@ -74,6 +74,8 @@ class VHXImage(StageImage):
 
 
 def _parse_makernote(data: bytes, makernote: bytes) -> dict:
+    """Keyence 'KmsFile' MakerNote as {tag: value}: 12-byte entries (tag, type, count, value/offset);
+    entries of 14 undefined bytes hold a double at absolute file offset + 6."""
     if not makernote.startswith(b"KmsFile"):
         raise ValueError("MakerNote is not a Keyence 'KmsFile' block")
     fields = {}
@@ -97,10 +99,13 @@ def _parse_makernote(data: bytes, makernote: bytes) -> dict:
 
 
 def _ole_to_datetime(value: float) -> _dt.datetime:
+    """OLE automation date (days since 30 Dec 1899) as datetime."""
     return _dt.datetime(1899, 12, 30) + _dt.timedelta(days=value)
 
 
 def _parse_panorama(data: bytes) -> Panorama | None:
+    """Series / stitching information from the embedded QuickReplayPanorama2DData XML (path mode, centres of
+    the two corner tiles, tile counts), or None if the image has none."""
     i = data.rfind(b"<QuickReplayPanorama2DData")
     if i == -1:
         return None
@@ -118,6 +123,7 @@ def _parse_panorama(data: bytes) -> Panorama | None:
     pano.path_mode = root.findtext(".//PathMode")
 
     def point(name):
+        """(X, Y) of the XML element name, or None if it is missing."""
         el = root.find(f".//{name}")
         if el is None or el.findtext("X") is None:
             return None

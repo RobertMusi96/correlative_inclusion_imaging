@@ -42,6 +42,8 @@ from cii.detection_figures import save_gallery, save_overlay
 
 
 def process(path: Path, p: DetectionParams, output: Path, figures: bool, gallery_max: int, labels: bool = True):
+    """Detects the objects of one VHX image; writes label images and figures if asked and returns the
+    object table and one row for images.csv (position, size, counts, saturated share)."""
     img = read_vhx(path)
     rgb = img.read_image()
     det = detect(rgb, img.um_per_px, p, stage=img)
@@ -87,6 +89,8 @@ def expand_images(items: list[str]) -> list[Path]:
 
 
 def main():
+    """Command line: detection of all given images (optionally in parallel), writes objects.csv, images.csv
+    and parameters.json."""
     d = DetectionParams()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("images", nargs="+", help="image files, folders or patterns such as \"D:\\data\\500x\\*.tif\"")

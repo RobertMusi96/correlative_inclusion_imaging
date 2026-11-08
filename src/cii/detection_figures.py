@@ -16,6 +16,7 @@ TEXT = (20, 20, 20)
 
 
 def _font(size: int):
+    """First available TrueType font of the given size (DejaVu, Arial), else PIL's default font."""
     for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "Arial.ttf"):
         try:
             return ImageFont.truetype(name, size)
@@ -25,6 +26,7 @@ def _font(size: int):
 
 
 def _rgb(image: np.ndarray) -> np.ndarray:
+    """Image as H x W x 3 RGB array (grey images repeated to three channels)."""
     return np.repeat(image[..., None], 3, axis=2) if image.ndim == 2 else image[..., :3]
 
 
@@ -68,6 +70,8 @@ def save_overlay(image: np.ndarray, det: Detection, path, label_min_area_um2: fl
 
 
 def _scale_bar(d: ImageDraw.ImageDraw, w: int, h: int, um_per_px: float, font, frac: float = 0.15):
+    """Draws a scale bar (1-1000 um, about frac of the image width) with its length in the lower
+    right corner of an overlay."""
     target = w * um_per_px * frac
     bar = max(v for v in (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000) if v <= max(target, 1))
     L = bar / um_per_px

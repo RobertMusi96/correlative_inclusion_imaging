@@ -64,6 +64,7 @@ class DetectionParams:
     min_area_um2: float = 0.3     # smallest object kept (ECD ~ 0.6 um)
 
     def __post_init__(self):
+        """Checks the contrast mode and fills high / low with the defaults of that mode if not given."""
         if self.channels not in DEFAULT_THRESHOLDS:
             raise ValueError(f"channels must be one of {list(DEFAULT_THRESHOLDS)}, not {self.channels!r}")
         hi, lo = DEFAULT_THRESHOLDS[self.channels]
@@ -85,6 +86,8 @@ class Detection:
 
 
 def _background(g: np.ndarray, um_per_px: float, p: DetectionParams) -> np.ndarray:
+    """Background of one image channel: median filter over background_um, computed on an image
+    reduced by an integer factor (window <= ~25 px, for speed) and interpolated back to full size."""
     win_full = p.background_um / um_per_px
     k = max(1, int(np.ceil(win_full / 25)))                    # median window <= ~25 px on the reduced image
     win = max(3, int(round(win_full / k)) | 1)
@@ -97,6 +100,8 @@ def _background(g: np.ndarray, um_per_px: float, p: DetectionParams) -> np.ndarr
 
 
 def _contrast(g: np.ndarray, bg: np.ndarray, p: DetectionParams) -> np.ndarray:
+    """Contrast (background - value) / background after Gaussian smoothing with smooth_px;
+    0 = matrix, 1 = black."""
     gs = ndi.gaussian_filter(g, p.smooth_px) if p.smooth_px > 0 else g
     return ((bg - gs) / bg).astype(np.float32)
 
@@ -210,6 +215,7 @@ def detect(image: np.ndarray, um_per_px: float, params: DetectionParams | None =
 
 
 def params_dict(p: DetectionParams) -> dict:
+    """Detection parameters as a plain dict (for parameters.json)."""
     return asdict(p)
 
 

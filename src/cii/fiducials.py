@@ -66,10 +66,13 @@ def find_marking(marked_path, min_pixels: int = 200) -> Marking:
 
 
 def _grey(image: np.ndarray) -> np.ndarray:
+    """Grey image as float (mean of the channels for colour images)."""
     return image.astype(float).mean(axis=2) if image.ndim == 3 else image.astype(float)
 
 
 def _roi(g, col, row, radius):
+    """Square cut-out of g around (col, row) with half size radius; returns the cut-out, the mask of the
+    circle inside it and the cut-out bounds (r0, r1, c0, c1)."""
     r = int(np.ceil(radius))
     r0, r1 = max(0, int(row) - r), min(g.shape[0], int(row) + r + 1)
     c0, c1 = max(0, int(col) - r), min(g.shape[1], int(col) + r + 1)
@@ -79,6 +82,8 @@ def _roi(g, col, row, radius):
 
 
 def _pick_component(binary, prefer_rc, min_area):
+    """Connected component of a binary image to keep: the largest one, ties broken by the distance
+    of its centre to prefer_rc (row, col); raises if nothing or only less than min_area px is found."""
     lab, n = ndi.label(binary)
     if n == 0:
         raise ValueError("nothing segmented inside the search circle")

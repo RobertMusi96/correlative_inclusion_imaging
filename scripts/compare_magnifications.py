@@ -34,6 +34,7 @@ from cii.compare import compare, summary
 
 
 def load(folder: Path):
+    """objects.csv and images.csv of a detection folder (or of the folder of a given objects.csv)."""
     folder = folder.parent if folder.suffix == ".csv" else folder
     if not folder.is_dir():
         raise SystemExit(f"folder not found: {str(folder)!r} - paths with spaces must be in quotes")
@@ -44,6 +45,8 @@ def load(folder: Path):
 
 
 def overview_figure(objs, summ, ref_mag, oth_mag, path, min_ecd):
+    """Figure: share found per ECD class of the reference (left) and stage map of the reference objects
+    >= min_ecd, missed ones highlighted (right)."""
     fig, (a, b) = plt.subplots(1, 2, figsize=(15, 5.5), gridspec_kw={"width_ratios": [1, 2]})
     x = np.arange(len(summ))
     a.bar(x, summ.found_pct, color="#2a78d6")
@@ -64,6 +67,8 @@ def overview_figure(objs, summ, ref_mag, oth_mag, path, min_ecd):
 
 
 def missed_figure(objs, ref_img, oth_img, path, n, min_ecd, field_um=14.0, tolerance=2.5, cols=4):
+    """Figure with the n largest missed reference objects: reference crop next to the other magnification's
+    crop at the expected position, with the match radius drawn."""
     from cii import read_vhx
     sel = objs[(objs.status == "missed") & (objs.ecd_um >= min_ecd)].sort_values("ecd_um", ascending=False).head(n)
     if not len(sel):
@@ -72,6 +77,8 @@ def missed_figure(objs, ref_img, oth_img, path, n, min_ecd, field_um=14.0, toler
     cache = {}
 
     def crop(name, x, y):
+        """Crop of field_um around stage position (x, y) of image name (images cached) and its extent in um
+        relative to that position, for imshow."""
         if name not in cache:
             if len(cache) > 6:
                 cache.pop(next(iter(cache)))
@@ -102,6 +109,8 @@ def missed_figure(objs, ref_img, oth_img, path, n, min_ecd, field_um=14.0, toler
 
 
 def main():
+    """Command line: compares two detection folders, prints the summary and writes summary, objects,
+    offsets and figures."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("reference", type=Path, help="detection folder of the higher magnification")
     ap.add_argument("other", type=Path, help="detection folder of the lower magnification")

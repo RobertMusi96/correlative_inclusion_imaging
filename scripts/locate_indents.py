@@ -33,6 +33,7 @@ METHOD = {"vhx": "dark", "sem": "edges"}
 
 
 def make_reader(instrument: str, fields_csv: Path | None):
+    """Image reader for the instrument: read_vhx, or read_aztec_tiff with the field table for SEM."""
     if instrument == "vhx":
         return read_vhx
     fields = read_field_positions(fields_csv) if fields_csv else None
@@ -42,12 +43,15 @@ def make_reader(instrument: str, fields_csv: Path | None):
 
 
 def label_from(name: str, pattern: str) -> str:
+    """Indent label from a file name (first group of pattern), else the whole name."""
     m = re.search(pattern, name)
     return m.group(1) if m else name
 
 
 def locate_folder(folder: Path, instrument: str, reader, label_regex: str,
                   figures: Path | None) -> pd.DataFrame:
+    """Locates the indent of every <name>_marked image pair in folder; returns one row per indent (pixel
+    and stage position, size, contrast) and writes a figure per indent if asked."""
     rows = []
     for marked in sorted(folder.glob("*_marked.*")):
         name = marked.stem[: -len("_marked")]
@@ -84,6 +88,8 @@ def locate_folder(folder: Path, instrument: str, reader, label_regex: str,
 
 def check_images(indents: pd.DataFrame, paths: list[Path], instrument: str, reader,
                  search_radius_um: float = 60) -> pd.DataFrame:
+    """Looks for the known indents in further images (e.g. another objective) and returns their
+    measured positions next to the expected ones."""
     rows = []
     for p in paths:
         img = reader(p)
@@ -103,6 +109,7 @@ def check_images(indents: pd.DataFrame, paths: list[Path], instrument: str, read
 
 
 def main():
+    """Command line: locates the indents of a folder, optionally checks further images, writes the CSV."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder", type=Path, help="folder with <name>.tif and <name>_marked.* images")
     ap.add_argument("--instrument", choices=["vhx", "sem"], default="vhx")

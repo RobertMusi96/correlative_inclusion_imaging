@@ -45,6 +45,8 @@ from cii.sem import read_field_positions
 
 
 def summaries(part: pd.DataFrame):
+    """Summary tables of the matching: statuses, found share, distance, size ratio, relaxed, cluster and
+    training_ok per class; found share per label and SEM ECD class."""
     order = ["matched", "ambiguous", "not_found", "outside", "sem_border", "sem_duplicate"]
     t = pd.crosstab(part.class_label, part.status).reindex(columns=order, fill_value=0)
     inside = t[["matched", "ambiguous", "not_found"]].sum(axis=1)
@@ -140,6 +142,8 @@ def write_review(rows: pd.DataFrame, path: Path, run_id: str) -> Path:
 
 
 def main():
+    """Command line: loads SEM exports, field table, transform and VHX detection, runs the matching,
+    writes the tables and model, and the verification sheets and review table if BSE images are given."""
     d = MatchParams()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sem", type=Path, required=True)

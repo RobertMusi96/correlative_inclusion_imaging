@@ -21,6 +21,8 @@ from cii.registration import fit_affine, fit_similarity, leave_one_out, residual
 
 
 def main():
+    """Command line: matches indents by label, fits the transform, prints residuals and leave-one-out
+    errors and writes the transform as JSON."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src_csv", type=Path, help="indents in the source system (e.g. VHX)")
     ap.add_argument("dst_csv", type=Path, help="indents in the target system (e.g. SEM)")

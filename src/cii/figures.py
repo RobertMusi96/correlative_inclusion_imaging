@@ -30,6 +30,7 @@ def _display(image: np.ndarray) -> tuple[np.ndarray, str | None]:
 
 
 def _nice_bar(width_um: float) -> float:
+    """Scale bar length (1, 2, 5, 10 ... 1000 um) of at most a quarter of the shown width."""
     for v in (1000, 500, 200, 100, 50, 20, 10, 5, 2, 1):
         if v <= width_um / 4:
             return v

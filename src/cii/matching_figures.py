@@ -46,9 +46,11 @@ def bse_paths(folder: Path, verbose: bool = True) -> dict[int, Path]:
 
 class ImageCache:
     def __init__(self, loader, size: int = 8):
+        """Cache for at most size images; loader(key) reads an image."""
         self.loader, self.size, self.data = loader, size, {}
 
     def get(self, key):
+        """Image for key, read with the loader on first use; the oldest image is dropped when the cache is full."""
         if key not in self.data:
             if len(self.data) >= self.size:
                 self.data.pop(next(iter(self.data)))
@@ -57,6 +59,7 @@ class ImageCache:
 
 
 def _load_bse(path):
+    """BSE image as float 0-1, stretched between the 0.5 and 99.8 % percentiles of the whole field."""
     a = tifffile.imread(path).astype(np.float32)
     if a.ndim == 3:
         a = a[..., 0]
@@ -65,6 +68,7 @@ def _load_bse(path):
 
 
 def _load_vhx(path):
+    """VHX image (first page of the TIFF) as RGB array."""
     a = tifffile.imread(path, key=0)
     return a[..., :3] if a.ndim == 3 else a
 
@@ -172,6 +176,8 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
 
 
 def overview(part: pd.DataFrame, path: Path):
+    """Overview figure: share of SEM particles with a VHX object per class (left) and per SEM ECD class
+    for typified, not typified and rejected particles (right)."""
     c = part[part.status.isin(["matched", "ambiguous", "not_found"])]
     fig, (a, b) = plt.subplots(1, 2, figsize=(13, 4.6))
     g = c.groupby("class_label").status.agg(n="size", found=lambda s: 100 * (s != "not_found").mean())

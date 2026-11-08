@@ -25,29 +25,35 @@ class Transform:
     dst: str = "dst"
 
     def apply(self, x, y):
+        """Transforms x, y (scalars or arrays) with dst = A @ [x, y] + t; returns x', y' in the input shape."""
         p = np.vstack([np.ravel(x), np.ravel(y)]).astype(float)
         q = self.A @ p + self.t[:, None]
         return q[0].reshape(np.shape(x)), q[1].reshape(np.shape(y))
 
     def inverse(self) -> "Transform":
+        """Inverse transform (dst -> src)."""
         Ai = np.linalg.inv(self.A)
         return Transform(Ai, -Ai @ self.t, self.kind, self.dst, self.src)
 
     # descriptive parameters (similarity part)
     @property
     def mirrored(self) -> bool:
+        """True if the transform mirrors (negative determinant), e.g. VHX -> SEM with opposite X axes."""
         return bool(np.linalg.det(self.A) < 0)
 
     @property
     def scale(self) -> float:
+        """Mean scale factor (square root of the absolute determinant)."""
         return float(np.sqrt(abs(np.linalg.det(self.A))))
 
     @property
     def rotation_deg(self) -> float:
+        """Rotation in degrees after undoing an X mirror."""
         A = self.A @ np.diag([-1, 1]) if self.mirrored else self.A   # undo X mirror first
         return float(np.degrees(np.arctan2(A[1, 0] - A[0, 1], A[0, 0] + A[1, 1])))
 
     def to_json(self, path) -> None:
+        """Writes the transform with scale, rotation, mirror flag and equation as JSON."""
         Path(path).write_text(json.dumps({
             "kind": self.kind, "src": self.src, "dst": self.dst,
             "A": self.A.tolist(), "t": self.t.tolist(),
@@ -56,6 +62,7 @@ class Transform:
 
     @classmethod
     def from_json(cls, path) -> "Transform":
+        """Reads a transform written by to_json."""
         d = json.loads(Path(path).read_text())
         return cls(np.array(d["A"], float), np.array(d["t"], float), d["kind"], d["src"], d["dst"])
 
@@ -81,6 +88,7 @@ def fit_similarity(src: np.ndarray, dst: np.ndarray, allow_mirror: bool = True) 
 
 
 def fit_affine(src: np.ndarray, dst: np.ndarray) -> Transform:
+    """Least-squares affine transform src -> dst (6 parameters, at least 3 point pairs)."""
     src, dst = np.asarray(src, float), np.asarray(dst, float)
     if len(src) < 3:
         raise ValueError("affine fit needs at least 3 points")
@@ -90,6 +98,7 @@ def fit_affine(src: np.ndarray, dst: np.ndarray) -> Transform:
 
 
 def residuals(T: Transform, src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Transformed src points minus dst points (um), one row per point pair."""
     x, y = T.apply(src[:, 0], src[:, 1])
     return np.column_stack([x, y]) - np.asarray(dst, float)
 

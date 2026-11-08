@@ -461,6 +461,8 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
     off_of = {(r.ref_image, r.other_image): np.array([r.dx_um, r.dy_um]) for r in res.offsets.itertuples()}
 
     def cands_pairs(row):
+        """Candidate views of a SEM particle for the first assignment: for every VHX image around it, the
+        predicted position with the pair offset (SEM field, VHX image), the image's KD tree and object indices."""
         for img in near[row]:
             off = off_of.get((fname[row], img))
             if off is not None and img in trees:
@@ -487,12 +489,16 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
         r_fill = (np.pi * r_ecd ** 2 / 4) / np.maximum((rb[:, 1] - rb[:, 0] - 2 * m) * (rb[:, 3] - rb[:, 2] - 2 * m), 1e-6)
 
         def region_ok(idx, ecd, length):
+            """True for VHX regions plausible for a SEM particle of this ECD and length: region ECD within
+            region_size_range, box side within region_max_side, area at least region_min_fill of the box."""
             lo, hi = p.region_size_range
             ratio = r_ecd[idx] / ecd
             return ((ratio >= lo) & (ratio <= hi) & (r_side[idx] <= max(p.region_max_side[0], p.region_max_side[1] * length))
                     & (r_fill[idx] >= p.region_min_fill))
 
         def region_ecd_at(vj, pred, ecd, length):
+            """ECD of the region of VHX object vj if its box contains the predicted position and the region is
+            plausible for the SEM particle, else None."""
             if not np.isfinite(r_ecd[vj]):
                 return None
             if rb[vj, 0] <= pred[0] <= rb[vj, 1] and rb[vj, 2] <= pred[1] <= rb[vj, 3] and region_ok(vj, ecd, length):
@@ -500,6 +506,8 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
             return None
 
         def region_lookup(img, pred, ecd, length):
+            """VHX objects in image img whose region box contains the predicted position and whose region is
+            plausible for the SEM particle (fallback when no object lies within the match radius)."""
             if img not in rtrees:
                 return []
             idx = r_idx[img][rtrees[img].query_ball_point(pred, r=rreach)]
@@ -523,6 +531,8 @@ def match(sem: pd.DataFrame, fields: pd.DataFrame, vhx_to_sem: Transform, vhx_ob
             base[fname == f] += corr
 
         def cands_model(row):
+            """Candidate views of a SEM particle after the model fit: for every VHX image around it, the position
+            predicted by the position model (minus that image's stage error), the image's KD tree and object indices."""
             for img in near[row]:
                 if img in trees:
                     yield img, base[row] - model["image_err"].get(img, z), trees[img], by_img[img]
