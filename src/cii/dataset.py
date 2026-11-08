@@ -134,33 +134,45 @@ def export_dataset(particles: pd.DataFrame, vhx_obj: pd.DataFrame, vhx_img: pd.D
     out_dir = Path(out_dir)
     (out_dir / "crops").mkdir(parents=True, exist_ok=True)
     (out_dir / "masks").mkdir(parents=True, exist_ok=True)
+
     obj = vhx_obj.set_index(["image", "id"])[["label", "region", "col_px", "row_px"]]
     by_img = {n: g for n, g in vhx_obj.groupby("image")}
     geo = vhx_img.set_index("image")
     rows, skipped = [], {}
+
     for img_name, g in particles.groupby("vhx_image"):
+
         if img_name not in vhx_paths:
             skipped["VHX image not found"] = skipped.get("VHX image not found", 0) + len(g)
             continue
+
         objects, regions = read_label_images(labels_dir, Path(img_name).stem)
+
         if objects is None or regions is None:
             skipped["label images missing"] = skipped.get("label images missing", 0) + len(g)
             continue
+
         rgb = tifffile.imread(vhx_paths[img_name], key=0)[..., :3]
         h, w = rgb.shape[:2]
+
         for _, r in g.iterrows():
             found = find_object(obj, by_img.get(img_name), img_name, r)
+
             if found is None:
                 skipped["matched object not in objects.csv"] = skipped.get("matched object not in objects.csv", 0) + 1
                 continue
+
             (lab_id, reg_id), moved = found
+
             if moved:
                 skipped["object found by position (id differs from matches.csv)"] = \
                     skipped.get("object found by position (id differs from matches.csv)", 0) + 1
+
             if r.match_type == "region":
                 mask_full, mask_kind = regions, reg_id
             else:
                 mask_full, mask_kind = objects, lab_id
+
             cc, rr = crop_centre(r)
             c0, r0 = crop_window(cc, rr, p.crop_px, w, h)
             crop = rgb[r0:r0 + p.crop_px, c0:c0 + p.crop_px]
@@ -176,13 +188,17 @@ def export_dataset(particles: pd.DataFrame, vhx_obj: pd.DataFrame, vhx_img: pd.D
                         "magnification": float(geo.loc[img_name, "magnification"])})
             row.update({c: r[c] for c in particles.columns if c.endswith("_wt")})
             rows.append(row)
+
     for why, n in skipped.items():
         log(f"{'note' if why.startswith('object found') else 'skipped'}: {n} particles - {why}")
+
     ds = pd.DataFrame(rows)
+
     if len(ds):
         wt = [c for c in ds.columns if c.endswith("_wt")]
         empty = [c for c in wt if not (ds[c].fillna(0) > 0).any()]
         ds = ds.drop(columns=empty)                       # elements never detected in these particles
+
     return ds
 
 
