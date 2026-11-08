@@ -125,7 +125,7 @@ object is stored (`contrast_R/G/B_mean`, `contrast_R/G/B_max`).
 
 ```bash
 # whole series: tables only, 4 parallel processes (~2 s per image and process)
-python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o results/detection_500x --no-figures -j 4
+uv run python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --no-figures -j 4
 # a few images with review figures (same parameters -> same objects)
 python scripts/detect_inclusions.py data/MnB/vhx_500x/*_00001*.tif -o results/check_500x
 ```
@@ -175,7 +175,7 @@ Assigns every SEM/EDS particle (AZtec feature analysis) its VHX object
 `*_pre_corr.xlsx`) and the field table (`*field_information*.csv`) into one folder.
 
 ```bash
-python scripts/match_sem_vhx.py --sem data/feature --transform data/results/vhx_to_sem.json --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images" -o data/results/sem_match_500x_brightfield_3
+uv run python scripts/match_sem_vhx.py --sem data/feature --transform data/results/vhx_to_sem.json --vhx data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images" -o data/results/sem_match_500x_brightfield_3
 ```
 
 1. SEM positions from the particle list -> VHX coordinates with the indent transform.
@@ -223,9 +223,9 @@ used). The script prints how many particles of each original class end up in
 which training class.
 
 ```bash
-python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_MnB.xlsx
+uv run python scripts/make_class_table.py data/results/sem_match_500x_brightfield/matches.csv -o data/datasets/classes_v1.xlsx
 # update (new matching / new sample, or after editing rules/settings), keeping classes, rules and settings:
-python scripts/make_class_table.py results/match_500x/matches.csv -o classes/classes_v2.xlsx --previous classes/classes_MnB.xlsx
+uv run python scripts/make_class_table.py data/results/sem_match_500x_brightfield_3/matches.csv -o data/datasets/classes_v2.xlsx --previous data/datasets/classes_v1.xlsx
 ```
 
 ## Results so far
@@ -263,8 +263,7 @@ Chance of a random object within the match radius ~2 % (null test).
 Nitrides appear green-dominant (pink) in 92 % of the matches, oxides in 5 %.
 Manual review of 210 particles (sheets of 6 Nov 2026): 124 of 128 matches correct
 (3.1 %, 95 % CI 0.9-7.8 %), all 4 errors clusters or split inclusions; of 82 not
-found, 70 not visible in the VHX image (mostly < 2 µm), 12 missed (6 of 9 at
->= 2 µm), all with the VHX object 1.7-4.4 µm off -> relaxed pass and cluster flag.
+found, 70 not visible in the VHX image (mostly < 2 µm), 12 missed (6 of 9 at >= 2 µm), all with the VHX object 1.7-4.4 µm off -> relaxed pass and cluster flag.
 
 ## Roadmap
 
