@@ -75,10 +75,14 @@ def use_style():
 
 
 def capitalise(text: str) -> str:
-    """Text with its first letter in upper case (the rest unchanged, e.g. 'µm' or 'VHX')."""
+    """Text with its first letter in upper case, the rest unchanged ('VHX', 'µm'). Leading
+    symbols such as '+ ' are skipped; text starting with a digit, '[', '#' or '(' (tile
+    numbers, ids, data values) is left as it is."""
     for i, ch in enumerate(text):
         if ch.isalpha():
             return text[:i] + ch.upper() + text[i + 1:]
+        if ch.isdigit() or ch in "[#(":
+            return text
     return text
 
 
@@ -96,8 +100,8 @@ def save_figure(fig, path: Path, **kwargs):
             if is_text and len(texts) == len(axis.get_ticklocs()):
                 axis.set_ticks(axis.get_ticklocs(), [capitalise(t) for t in texts])
 
-        for loc in ("left", "center", "right"):
-            ax.set_title(capitalise(ax.get_title(loc=loc)), loc=loc)
+        for title in (ax.title, ax._left_title, ax._right_title):     # set_text keeps the font size
+            title.set_text(capitalise(title.get_text()))
 
         legend = ax.get_legend()
         if legend is not None:
@@ -1857,7 +1861,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
         page_no = p0 // FLAGGED_PER_PAGE + 1
         nrow = int(np.ceil(len(page) / per_row))
         ncol = per_row * (2 if bse else 1)
-        fig, axes = plt.subplots(nrow, ncol, figsize=(1.95 * ncol, 2.45 * nrow + 0.5), squeeze=False)
+        fig, axes = plt.subplots(nrow, ncol, figsize=(1.95 * ncol, 2.6 * nrow + 0.5), squeeze=False)
 
         for ax in axes.flat:
             ax.axis("off")
@@ -1870,7 +1874,8 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
 
             typ = r.Type if isinstance(r.Type, str) else r.class_label
             caption = (f"[{page_no}-{k + 1}] #{r.sem_id} {typ}\n"
-                       f"{short_class(r.training_class)} → {short_class(r.predicted)} (p {r.p_own:.2f})\n"
+                       f"{short_class(r.training_class)} → {short_class(r.predicted)}\n"
+                       f"p(label) {r.p_own:.2f} · p(predicted) {r.p_predicted:.2f}\n"
                        f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm")
             av.set_title(caption, fontsize=6)
 
@@ -1882,7 +1887,8 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
 
         um = float(page.crop_size_px.iloc[0] * page.um_per_px.iloc[0])
         what = "VHX crop with mask | BSE with SEM box" if bse else "VHX crop with mask"
-        fig.suptitle(f"Model-flagged particles, page {page_no}: label → prediction (probability of the label); "
+        fig.suptitle(f"Model-flagged particles, page {page_no}: label → predicted class; p = out-of-fold "
+                     f"model probability of the label and of the predicted class; "
                      f"{what}; {um:.1f} µm wide", x=0.01, ha="left", color=MUTED, fontsize=9)
         fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
 
@@ -1905,7 +1911,7 @@ def flagged_review(flagged: pd.DataFrame, out: Path) -> Path:
     d["page"] = np.arange(len(d)) // FLAGGED_PER_PAGE + 1
     d["tile"] = np.arange(len(d)) % FLAGGED_PER_PAGE + 1
     cols = ["page", "tile", "sem_id", "field", "vhx_image", "crop", "training_class", "class_label", "Type",
-            "predicted", "p_own", "sem_ecd_um", "vhx_ecd_um", "match_type", "match_warnings"] + wt
+            "predicted", "p_own", "p_predicted", "sem_ecd_um", "vhx_ecd_um", "match_type", "match_warnings"] + wt
     d = d[cols].copy()
     d["verdict"] = ""
     d["note"] = ""
