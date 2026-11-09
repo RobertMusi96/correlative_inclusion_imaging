@@ -58,13 +58,21 @@ class ImageCache:
         return self.data[key]
 
 
-def _load_bse(path):
-    """BSE image as float 0-1, stretched between the 0.5 and 99.8 % percentiles of the whole field."""
-    a = tifffile.imread(path).astype(np.float32)
-    if a.ndim == 3:
-        a = a[..., 0]
-    lo, hi = np.percentile(a, [0.5, 99.8])
-    return np.clip((a - lo) / max(hi - lo, 1), 0, 1)
+BSE_BITS = 15      # bit depth of the BSE data (AZtec writes 15-bit values into 16-bit TIFFs)
+
+
+def load_bse_8bit(path) -> np.ndarray:
+    """BSE image as 8-bit grey values, scaled linearly from BSE_BITS bit: grey = value x 255 /
+    (2^BSE_BITS - 1), the same for every image; no normalisation. 8-bit images are used as
+    they are."""
+    a = tifffile.imread(path)
+    a = a[..., 0] if a.ndim == 3 else a
+
+    if a.dtype == np.uint8:
+        return a
+
+    grey = a.astype(np.float32) * 255 / (2 ** BSE_BITS - 1)
+    return np.clip(np.round(grey), 0, 255).astype(np.uint8)
 
 
 def _load_vhx(path):
@@ -114,7 +122,7 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
     vi = vhx_img.set_index("image")
     vhx_paths = vhx_paths if vhx_paths is not None else resolve_vhx_paths(vhx_img)
     vpath = lambda n: vhx_paths.get(n)
-    bse_cache, vhx_cache = ImageCache(_load_bse), ImageCache(_load_vhx, 4)
+    bse_cache, vhx_cache = ImageCache(load_bse_8bit), ImageCache(_load_vhx, 4)
     nrow = int(np.ceil(len(rows) / cols))
     fig, axes = plt.subplots(nrow, 2 * cols, figsize=(2 * cols * 1.75, nrow * 2.05), squeeze=False)
     for ax in axes.flat:
@@ -129,7 +137,7 @@ def verification_sheet(rows: pd.DataFrame, vhx_img: pd.DataFrame, bse: dict, pat
             cx, cy = r.bb_left_px + r.bb_width_px / 2, r.bb_top_px + r.bb_height_px / 2
             hp = half_um / sem_um_per_px
             c, x0, y0 = _crop(img, cx, cy, hp)
-            a1.imshow(c, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+            a1.imshow(c, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
             a1.add_patch(Rectangle((r.bb_left_px - x0 - 0.5, r.bb_top_px - y0 - 0.5), r.bb_width_px, r.bb_height_px,
                                    fill=False, ec="#e8590c", lw=0.7))
         else:

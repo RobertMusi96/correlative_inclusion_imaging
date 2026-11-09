@@ -1596,7 +1596,6 @@ GALLERY_N = 24                  # crops per origin group in the galleries (rando
 FLAGGED_PER_PAGE = 24           # model-flagged particles per page
 FLAGGED_FONT = 13               # caption size on the flagged pages (pt)
 SEM_UM_PER_PX = 0.294864        # BSE pixel size of the AZtec fields (as in cii.matching_figures)
-BSE_BITS = 15                   # bit depth of the BSE data (AZtec writes 15-bit values into 16-bit TIFFs)
 VERDICTS = ["label correct (model wrong)", "label wrong", "wrong particle (match)", "mask wrong", "unclear"]
 
 
@@ -1836,26 +1835,10 @@ def bse_lookup(ds: pd.DataFrame, root: Path, bse_dir: Path | None, matches: Path
     return {"images": bse_paths(Path(bse_dir)), "boxes": boxes}
 
 
-def load_bse_8bit(path) -> np.ndarray:
-    """BSE image as 8-bit grey values, scaled linearly from BSE_BITS bit (AZtec: 15-bit data in
-    16-bit TIFFs): grey = value x 255 / (2^BSE_BITS - 1), the same for every image; no
-    normalisation. 8-bit images are used as they are."""
-    import tifffile
-
-    a = tifffile.imread(path)
-    a = a[..., 0] if a.ndim == 3 else a
-
-    if a.dtype == np.uint8:
-        return a
-
-    grey = a.astype(np.float32) * 255 / (2 ** BSE_BITS - 1)
-    return np.clip(np.round(grey), 0, 255).astype(np.uint8)
-
-
 def bse_tile(ax, bse: dict, cache, r, width_um: float):
     """BSE image of the particle's SEM field around its bounding box (same width in µm as the
-    VHX crop) in 8-bit grey values (load_bse_8bit, not normalised: 0 = black, 255 = white for
-    every tile). SEM bounding box drawn; outside the field white; a note if the image is
+    VHX crop) in 8-bit grey values (cii.matching_figures.load_bse_8bit, not normalised: 0 = black,
+    255 = white for every tile). SEM bounding box drawn; outside the field white; a note if the image is
     missing."""
     from matplotlib.patches import Rectangle
 
@@ -1892,7 +1875,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
     """Pages of the model-flagged particles: per particle the VHX crop with its mask outline
     and, with BSE images, the BSE crop of the same width next to it. Numbered [page-tile] as in
     6_flagged_review.xlsx."""
-    from .matching_figures import ImageCache
+    from .matching_figures import ImageCache, load_bse_8bit
 
     use_style()
     colours = class_colours(class_order(ds))
