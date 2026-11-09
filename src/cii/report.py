@@ -21,12 +21,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# categorical colours in fixed order (validated: CVD and normal-vision separation, light surface)
+from .plot_style import setup_matplotlib_parameter
+
+# categorical colours in fixed order (validated: CVD and normal-vision separation on white)
 CLASS_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
-TEXT = "#0b0b0b"
-TEXT_2 = "#52514e"
-GRID = "#e4e3df"
-SURFACE = "#fcfcfb"
+TEXT = "#222222"         # values written into the plots (same as the axes colour of the style)
+MUTED = "#444444"        # secondary text (same as the legend text of the style)
 
 
 def class_order(ds: pd.DataFrame) -> list[str]:
@@ -48,12 +48,9 @@ def part_label(ds: pd.DataFrame) -> pd.Series:
     return pd.Series(np.where(ds.split == "test", "test", "fold " + fold), index=ds.index)
 
 
-def _style(ax):
-    """Recessive axes: no top/right spines, light grid behind the marks, muted tick labels."""
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.spines[["left", "bottom"]].set_color(GRID)
-    ax.tick_params(colors=TEXT_2, labelsize=8)
-    ax.set_axisbelow(True)
+def use_style():
+    """Applies the project's matplotlib style (cii.plot_style) with the class colours as cycle."""
+    setup_matplotlib_parameter(CLASS_COLOURS)
 
 
 # ---------------------------------------------------------------------------
@@ -94,78 +91,83 @@ def composition_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
 def composition_figure(ds: pd.DataFrame, t: dict, path: Path):
     """Figure of section 1: particles per class (left) and class shares per part of the
     split (right, one bar per test set / fold)."""
+    use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
     counts, shares = t["counts"], t["shares_pct"]
 
-    fig, (a, b) = plt.subplots(1, 2, figsize=(13, 4.2), gridspec_kw={"width_ratios": [1, 1.4]})
-    fig.patch.set_facecolor(SURFACE)
+    fig, (a, b) = plt.subplots(1, 2, figsize=(15, 5), gridspec_kw={"width_ratios": [1, 1.5]})
 
     # left: total per class, labelled with count and share
     y = np.arange(len(classes))[::-1]
-    a.barh(y, counts.total, height=0.55, color=[colours[c] for c in classes], edgecolor=SURFACE, linewidth=2)
+    a.barh(y, counts.total, height=0.55, color=[colours[c] for c in classes], edgecolor="white", linewidth=2)
+
     for yi, c in zip(y, classes):
         n, pct = counts.at[c, "total"], counts.at[c, "share_of_dataset_pct"]
-        a.text(n + counts.total.max() * 0.01, yi, f"{n}  ({pct:.0f} %)", va="center", fontsize=8, color=TEXT)
-    a.set_yticks(y, classes, fontsize=8, color=TEXT)
-    a.set_xlim(0, counts.total.max() * 1.25)
-    a.set_xlabel("particles", fontsize=8, color=TEXT_2)
-    a.set_title(f"Particles per class (total {int(counts.total.sum())})", fontsize=10, color=TEXT, loc="left")
-    a.grid(axis="x", color=GRID, linewidth=0.6)
-    _style(a)
+        a.text(n + counts.total.max() * 0.01, yi, f"{n}  ({pct:.0f} %)", va="center", color=TEXT)
+
+    a.set_yticks(y, classes)
+    a.set_xlim(0, counts.total.max() * 1.3)
+    a.set_xlabel("particles")
+    a.set_title(f"Particles per class (total {int(counts.total.sum())})", loc="left")
+    a.grid(axis="y", visible=False)
+    a.set_axisbelow(True)
 
     # right: 100 % stacked bar per part of the split
     parts = list(shares.columns)
     x = np.arange(len(parts))
     bottom = np.zeros(len(parts))
+
     for c in classes:
         v = shares.loc[c].to_numpy()
-        b.bar(x, v, bottom=bottom, width=0.6, color=colours[c], edgecolor=SURFACE, linewidth=2, label=c)
+        b.bar(x, v, bottom=bottom, width=0.6, color=colours[c], edgecolor="white", linewidth=2, label=c)
+
         for xi, (vi, bi) in enumerate(zip(v, bottom)):
             if vi >= 6:                                   # label only segments large enough to hold it
-                b.text(xi, bi + vi / 2, f"{vi:.0f}", ha="center", va="center", fontsize=7, color=TEXT)
+                b.text(xi, bi + vi / 2, f"{vi:.0f}", ha="center", va="center", color=TEXT)
+
         bottom += v
+
     n_part = pd.crosstab(part_label(ds), 1)[1].reindex(parts)
-    b.set_xticks(x, [f"{p}\nn={n}" for p, n in zip(parts, n_part)], fontsize=8, color=TEXT)
+    b.set_xticks(x, [f"{p}\nn={n}" for p, n in zip(parts, n_part)])
     b.set_ylim(0, 100)
-    b.set_ylabel("share of the part (%)", fontsize=8, color=TEXT_2)
-    b.set_title("Class shares in the test set and the folds", fontsize=10, color=TEXT, loc="left")
-    b.legend(fontsize=8, frameon=False, bbox_to_anchor=(1.01, 1), loc="upper left", labelcolor=TEXT)
-    _style(b)
+    b.set_ylabel("share of the part (%)")
+    b.set_title("Class shares in the test set and the folds", loc="left")
+    b.legend(bbox_to_anchor=(1.01, 1), loc="upper left")
+    b.grid(axis="x", visible=False)
+    b.set_axisbelow(True)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    fig.savefig(path, dpi=150)
     plt.close(fig)
 
 
 def origin_figure(t: dict, path: Path):
     """Figure of section 1: original AZtec class (rows) -> training class (columns), counts
     as a single-hue heatmap with the numbers written in the cells."""
+    use_style()
     origin = t["origin"].drop(columns="total")
     v = origin.to_numpy()
 
-    fig, ax = plt.subplots(figsize=(1.6 + 1.35 * v.shape[1], 0.9 + 0.38 * v.shape[0]))
-    fig.patch.set_facecolor(SURFACE)
+    fig, ax = plt.subplots(figsize=(2.5 + 1.9 * v.shape[1], 1.4 + 0.45 * v.shape[0]))
     ax.imshow(np.log1p(v), cmap="Blues", aspect="auto", vmin=0, vmax=np.log1p(v.max()) * 1.15)
+    ax.grid(False)
 
     for i in range(v.shape[0]):
         for j in range(v.shape[1]):
             if v[i, j]:
                 dark = np.log1p(v[i, j]) > 0.6 * np.log1p(v.max())
-                ax.text(j, i, str(v[i, j]), ha="center", va="center", fontsize=8,
-                        color=SURFACE if dark else TEXT)
+                ax.text(j, i, str(v[i, j]), ha="center", va="center", color="white" if dark else TEXT)
 
-    ax.set_xticks(range(v.shape[1]), origin.columns, fontsize=8, color=TEXT, rotation=20, ha="right")
-    ax.set_yticks(range(v.shape[0]), origin.index, fontsize=8, color=TEXT)
-    ax.set_xlabel("training class", fontsize=8, color=TEXT_2)
-    ax.set_ylabel("original class (AZtec)", fontsize=8, color=TEXT_2)
-    ax.set_title("Origin of the training classes (particles)", fontsize=10, color=TEXT, loc="left")
+    ax.set_xticks(range(v.shape[1]), origin.columns, rotation=15, ha="right")
+    ax.set_yticks(range(v.shape[0]), origin.index)
+    ax.set_xlabel("training class")
+    ax.set_ylabel("original class (AZtec)")
+    ax.set_title("Origin of the training classes (particles)", loc="left")
     ax.tick_params(length=0)
-    for s in ax.spines.values():
-        s.set_visible(False)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    fig.savefig(path, dpi=150)
     plt.close(fig)
 
 
@@ -281,30 +283,32 @@ def _ecdf(ax, values, colour, label, dashed=False):
 def size_figure(ds: pd.DataFrame, base: dict, path: Path):
     """Figure of section 2: cumulative SEM ECD (left) and VHX ECD (middle) per class / group,
     VHX / SEM size ratio per class (right, box = quartiles, whiskers = 5-95 %)."""
+    use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
     groups = size_groups(ds)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.3), gridspec_kw={"width_ratios": [1, 1, 0.8]})
-    fig.patch.set_facecolor(SURFACE)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), gridspec_kw={"width_ratios": [1, 1, 0.85]})
 
     # left / middle: cumulative size distributions, one line per group (class colour, rule groups dashed)
     for ax, col, title in [(axes[0], "sem_ecd_um", "SEM ECD"), (axes[1], "vhx_ecd_um", "VHX ECD")]:
+
         for name in sorted(groups.unique()):
             sel = groups == name
             cls = ds.training_class[sel].iloc[0]
             dashed = "(rule" in name
             _ecdf(ax, ds.loc[sel, col].to_numpy(), colours[cls], f"{name}  (n={int(sel.sum())})", dashed)
+
         ax.set_xscale("log")
         ax.set_xticks([1, 1.5, 2, 3, 5, 10, 20], ["1", "1.5", "2", "3", "5", "10", "20"])
+        ax.minorticks_off()
         ax.set_xlim(0.7, 25)
         ax.set_ylim(0, 100)
-        ax.set_xlabel(f"{title} (µm)", fontsize=8, color=TEXT_2)
-        ax.set_ylabel("particles smaller than this (%)", fontsize=8, color=TEXT_2)
-        ax.set_title(f"{title} per class", fontsize=10, color=TEXT, loc="left")
-        ax.grid(color=GRID, linewidth=0.6)
-        _style(ax)
-    axes[0].legend(fontsize=7, frameon=False, loc="lower right", labelcolor=TEXT)
+        ax.set_xlabel(f"{title} (µm)")
+        ax.set_ylabel("particles smaller than this (%)")
+        ax.set_title(f"{title} per class", loc="left")
+
+    axes[0].legend(loc="lower right", fontsize=9)
 
     # right: size ratio VHX / SEM per class
     ax = axes[2]
@@ -312,24 +316,27 @@ def size_figure(ds: pd.DataFrame, base: dict, path: Path):
     data = [ratio[ds.training_class == c].to_numpy() for c in classes]
     bp = ax.boxplot(data, vert=False, whis=(5, 95), showfliers=False, widths=0.5, patch_artist=True,
                     medianprops={"color": TEXT, "linewidth": 1.5})
+
     for patch, c in zip(bp["boxes"], classes):
         patch.set_facecolor(colours[c])
-        patch.set_edgecolor(SURFACE)
+        patch.set_edgecolor("white")
+
     for k, d in enumerate(data):
-        ax.text(np.percentile(d, 95) + 0.05, k + 1, f"median {np.median(d):.2f}", va="center", fontsize=7, color=TEXT_2)
-    ax.axvline(1, color=TEXT_2, linewidth=0.8, linestyle=":")
-    ax.set_yticks(range(1, len(classes) + 1), classes, fontsize=8, color=TEXT)
+        ax.text(np.percentile(d, 95) + 0.04, k + 1, f"median {np.median(d):.2f}", va="center", color=MUTED)
+
+    ax.axvline(1, color=MUTED, linewidth=0.8, linestyle=":")
+    ax.set_yticks(range(1, len(classes) + 1), classes)
     ax.invert_yaxis()
-    ax.set_xlabel("VHX ECD / SEM ECD", fontsize=8, color=TEXT_2)
-    ax.set_title("Size in the light microscope vs SEM", fontsize=10, color=TEXT, loc="left")
-    ax.grid(axis="x", color=GRID, linewidth=0.6)
-    _style(ax)
+    ax.set_xlim(right=max(np.percentile(d, 95) for d in data) + 0.45)
+    ax.set_xlabel("VHX ECD / SEM ECD")
+    ax.set_title("Size in the light microscope vs SEM", loc="left")
+    ax.grid(axis="y", visible=False)
 
     fig.suptitle(f"Size-only baseline (VHX ECD, cross-validated): balanced accuracy "
                  f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
-                 fontsize=9, color=TEXT_2, x=0.01, ha="left")
+                 x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    fig.savefig(path, dpi=150)
     plt.close(fig)
 
 
