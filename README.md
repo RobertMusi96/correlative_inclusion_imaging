@@ -275,6 +275,15 @@ section by section; `--sections 1,2` runs a selection):
    patch around the darkest point in the mask) and region (out to the faint
    edge, contrast >= 0.04, at most 2 µm further), so they do not depend on
    whether the matching saved an object or a region mask.
+4. Label quality: match warnings per class (relaxed match, several VHX
+   candidates, SEM neighbour, VHX / SEM size ratio outside 0.5-2), EDS per
+   training class and original AZtec class (elements present without the matrix
+   elements Fe and Mn, Fe share as a measure of how weak the particle's own
+   signal is), how the cross-validated logistic regression of section 3
+   classifies each origin group and certain / uncertain matches, and
+   `4_suspicious.csv`: particles with a match warning or where the model
+   confidently disagrees with the label, for review (`4_label_quality.xlsx`,
+   `4_label_quality.png`, `4_chemistry.png`, `4_model_by_origin.png`).
 
 ```bash
 python scripts/dataset_report.py data/datasets/dataset_v1

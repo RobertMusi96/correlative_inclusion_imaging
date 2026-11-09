@@ -17,6 +17,11 @@ Built section by section; each section writes its tables and figures into
    crops: shape, interior and edge features (cii.crop_features), baselines
    adding one feature group after the other, and the single features that best
    separate the two classes colour confuses most.
+4. Label quality: match warnings per class (relaxed match, several candidates,
+   SEM neighbour, size mismatch), EDS composition per training class and
+   original AZtec class (elements present, Fe share = weak particle signal),
+   how the cross-validated model classifies each origin group and certain /
+   uncertain matches, and a list of suspicious particles for review.
 """
 from __future__ import annotations
 
@@ -873,3 +878,358 @@ def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
     cf = crop_feature_part(ds, feats, base, out, log)
 
     return {"tables": t, "baseline": base, "exposure": exp, "crop_features": cf}
+
+
+# ---------------------------------------------------------------------------
+# 4. Label quality: how trustworthy is the class of each crop?
+
+SIZE_MISMATCH = (0.5, 2.0)      # VHX / SEM ECD outside this range: possibly another VHX particle
+PRESENT_WT = 1.0                # an element counts as present in a particle from this wt%
+MIN_GROUP = 10                  # origin groups with fewer particles are left out of the figures
+MODEL_DISAGREES = 0.2           # model probability of the own class below this: listed as suspicious
+MATRIX_ELEMENTS = ["Fe", "Mn"]  # come (also) from the steel matrix: reported as matrix share, not as particle chemistry
+
+FLAGS = {                       # column -> description; any of them = match uncertain
+    "flag_relaxed": "relaxed match (large particle, single candidate)",
+    "flag_candidates": "several VHX candidates within reach",
+    "flag_neighbour": "another SEM particle close by",
+    "flag_size": f"VHX / SEM size ratio outside {SIZE_MISMATCH[0]:g}-{SIZE_MISMATCH[1]:g}",
+}
+
+
+def origin_groups(ds: pd.DataFrame) -> pd.Series:
+    """Group per particle: '<training class> (<AZtec class>)', e.g. 'Artifact (rejected)'."""
+    return ds.training_class + " (" + ds.class_label.fillna("?").astype(str) + ")"
+
+
+def label_flags(ds: pd.DataFrame) -> pd.DataFrame:
+    """Warning signs of the match per particle (see FLAGS) and 'uncertain' = any of them."""
+    ratio = ds.vhx_ecd_um / ds.sem_ecd_um
+
+    flags = pd.DataFrame(index=ds.index)
+    flags["flag_relaxed"] = ds.match_type == "relaxed"
+    flags["flag_candidates"] = ds.n_candidates.fillna(1) > 1
+    flags["flag_neighbour"] = ds.sem_neighbour.astype(str).str.lower() == "true"
+    flags["flag_size"] = (ratio < SIZE_MISMATCH[0]) | (ratio > SIZE_MISMATCH[1])
+    flags["uncertain"] = flags[list(FLAGS)].any(axis=1)
+
+    return flags
+
+
+def match_table(ds: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
+    """Per class: match types (%), warning flags (%), uncertain (%) and the distance between
+    the SEM position (through the position model) and the VHX object (median, 90th percentile)."""
+    rows = []
+
+    for c in class_order(ds):
+        sel = ds.training_class == c
+        row = {"training_class": c, "n": int(sel.sum())}
+
+        for t in ["object", "region", "relaxed"]:
+            row[f"{t}_pct"] = round(100 * float((ds.match_type[sel] == t).mean()), 1)
+
+        for f in list(FLAGS) + ["uncertain"]:
+            row[f"{f}_pct"] = round(100 * float(flags[f][sel].mean()), 1)
+
+        row["distance_um_p50"] = round(float(ds.distance_um[sel].median()), 2)
+        row["distance_um_p90"] = round(float(ds.distance_um[sel].quantile(0.9)), 2)
+        rows.append(row)
+
+    return pd.DataFrame(rows).set_index("training_class")
+
+
+def chemistry_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """EDS per origin group: share of particles with the element present (>= PRESENT_WT, %) and
+    median wt% of the elements present in at least 10 % of some group (without the matrix
+    elements), and quartiles of the matrix elements (Fe: the higher, the weaker the particle's
+    own signal)."""
+    groups = origin_groups(ds)
+    matrix = [f"{e}_wt" for e in MATRIX_ELEMENTS if f"{e}_wt" in ds]
+    wt = [c for c in ds.columns if c.endswith("_wt") and c not in matrix]
+
+    present = (ds[wt].fillna(0) >= PRESENT_WT).groupby(groups).mean() * 100
+    big = groups.value_counts()
+    big = big[big >= MIN_GROUP].index
+    keep = [c for c in wt if (present.loc[present.index.isin(big), c] >= 10).any()]
+
+    share = present[keep].round(0)
+    share.columns = [c.removesuffix("_wt") for c in keep]
+    share.insert(0, "n", groups.value_counts().reindex(share.index))
+
+    median = ds[keep].fillna(0).groupby(groups).median().round(1)
+    median.columns = share.columns[1:]
+
+    matrix_q = ds[matrix].groupby(groups).quantile([0.25, 0.5, 0.75]).unstack().round(1)
+    matrix_q.columns = [f"{c}_p{int(q * 100)}" for c, q in matrix_q.columns]
+
+    return {"present_pct": share, "median_wt": median, "matrix": matrix_q}
+
+
+def model_features(ds: pd.DataFrame, out: Path) -> tuple[pd.DataFrame, str]:
+    """Features for the section 4 model: all of section 3 (colour, size, shape, interior, edge)
+    if the crop features exist (3_crop_features.csv, or computed from the crops), otherwise
+    colour and size only. Returns the table and a short description."""
+    from .crop_features import FEATURES, dataset_features
+
+    feats = None
+    csv = out / "3_crop_features.csv"
+
+    if csv.exists():
+        f = pd.read_csv(csv).set_index("crop")
+        if set(ds.crop) <= set(f.index):
+            feats = f.loc[ds.crop, list(FEATURES)].set_index(ds.index)
+
+    if feats is None:
+        feats = dataset_features(ds, out.parent)
+
+    if feats is None:
+        X = colour_columns(ds)
+        X["log_vhx_ecd"] = np.log(ds.vhx_ecd_um.clip(lower=0.1))
+        return X, "colour + size; no crops"
+
+    X, _ = feature_table(ds, feats)
+    return X, "colour + size + shape + interior + edge"
+
+
+def cv_probabilities(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> np.ndarray:
+    """Out-of-fold class probabilities (n x classes) of the section 3 model (logistic
+    regression, median for missing values, standardised, balanced class weights)."""
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    proba = np.full((len(y), len(classes)), np.nan)
+
+    for k in sorted(np.unique(folds)):
+        val = folds == k
+
+        if len(np.unique(y[~val])) < 2:
+            continue
+
+        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
+                              LogisticRegression(class_weight="balanced", max_iter=3000))
+        model.fit(X[~val], y[~val])
+
+        cols = [classes.index(c) for c in model.classes_]
+        proba[np.ix_(np.flatnonzero(val), cols)] = model.predict_proba(X[val])
+
+    return proba
+
+
+def model_predictions(ds: pd.DataFrame, X: pd.DataFrame) -> pd.DataFrame:
+    """Out-of-fold prediction for every training / validation particle (test set untouched):
+    predicted class, its probability and the probability of the own class."""
+    classes = class_order(ds)
+    tv = ds.split == "trainval"
+
+    proba = cv_probabilities(X.to_numpy(dtype=float)[tv.to_numpy()], ds.training_class[tv].to_numpy(),
+                             ds.fold[tv].to_numpy(), classes)
+    proba = np.nan_to_num(proba, nan=0.0)
+    own = np.array([classes.index(c) for c in ds.training_class[tv]])
+
+    pred = pd.DataFrame(index=ds.index[tv])
+    pred["predicted"] = [classes[i] for i in proba.argmax(axis=1)]
+    pred["p_predicted"] = proba.max(axis=1).round(3)
+    pred["p_own"] = proba[np.arange(len(own)), own].round(3)
+
+    return pred
+
+
+def model_tables(ds: pd.DataFrame, flags: pd.DataFrame, pred: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Where the model goes wrong: per origin group the share predicted as each class (%) and
+    correct (%); per class the share correct for certain and uncertain matches (%)."""
+    d = ds.loc[pred.index].assign(origin=origin_groups(ds), predicted=pred.predicted,
+                                  correct=pred.predicted == ds.training_class.loc[pred.index],
+                                  uncertain=flags.uncertain)
+
+    by_origin = pd.crosstab(d.origin, d.predicted, normalize="index").reindex(columns=class_order(ds), fill_value=0)
+    by_origin = (100 * by_origin).round(1)
+    by_origin.columns = [f"predicted {c} (%)" for c in by_origin.columns]
+    by_origin.insert(0, "correct_pct", (100 * d.groupby("origin").correct.mean()).round(1))
+    by_origin.insert(0, "n", d.origin.value_counts())
+
+    by_flag = d.groupby(["training_class", "uncertain"]).correct.agg(["size", "mean"]).unstack()
+    by_flag.columns = [f"{'n' if s == 'size' else 'correct_pct'}_{'uncertain' if u else 'certain'}" for s, u in by_flag.columns]
+    for c in by_flag.columns:
+        by_flag[c] = (100 * by_flag[c]).round(1) if c.startswith("correct") else by_flag[c].fillna(0).astype(int)
+
+    return {"by_origin": by_origin, "by_flag": by_flag}
+
+
+def suspicious_list(ds: pd.DataFrame, flags: pd.DataFrame, pred: pd.DataFrame) -> pd.DataFrame:
+    """Particles worth a look: any match warning, or the model confidently disagrees with the
+    label (own class probability < MODEL_DISAGREES). Sorted by number of reasons, then by the
+    probability of the own class."""
+    d = ds[["crop", "sem_id", "field", "vhx_image", "training_class", "class_label", "Type", "split",
+            "match_type", "distance_um", "sem_ecd_um", "vhx_ecd_um"]].copy()
+    d = d.join(flags[list(FLAGS)]).join(pred)
+    d["flag_model"] = d.p_own < MODEL_DISAGREES
+    d.loc[d.predicted == d.training_class, "flag_model"] = False
+
+    reasons = list(FLAGS) + ["flag_model"]
+    d["n_reasons"] = d[reasons].fillna(False).astype(bool).sum(axis=1)
+    d["reasons"] = d[reasons].fillna(False).astype(bool).apply(
+        lambda r: ", ".join(k.removeprefix("flag_") for k in reasons if r[k]), axis=1)
+
+    wt = [c for c in ["O_wt", "N_wt", "S_wt", "Al_wt", "Ca_wt", "Mg_wt", "Ti_wt", "Mn_wt", "Si_wt", "Fe_wt"] if c in ds]
+    d = d.join(ds[wt])
+
+    d = d[d.n_reasons > 0].sort_values(["n_reasons", "p_own"], ascending=[False, True])
+    return d.drop(columns=reasons)
+
+
+def label_quality_figure(ds: pd.DataFrame, match: pd.DataFrame, chem: dict, path: Path):
+    """Figure of section 4: share of matches with each warning per class (left) and the Fe
+    share of the EDS spectrum per origin group (right; high Fe = weak particle signal)."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    fig, (a, b) = plt.subplots(1, 2, figsize=(16, 6), gridspec_kw={"width_ratios": [1, 1.1]})
+
+    # left: warnings per class, grouped bars
+    rows = ["region"] + list(FLAGS) + ["uncertain"]
+    names = ["matched to a region"] + [FLAGS[f] for f in FLAGS] + ["any warning (uncertain)"]
+    cols = ["region_pct"] + [f"{f}_pct" for f in FLAGS] + ["uncertain_pct"]
+    h = 0.8 / len(classes)
+    y = np.arange(len(rows))
+
+    for i, c in enumerate(classes):
+        v = match.loc[c, cols].to_numpy(dtype=float)
+        a.barh(y + (i - (len(classes) - 1) / 2) * h, v, height=h, color=colours[c], label=c)
+
+        for yi, vi in zip(y, v):
+            a.text(vi + 0.3, yi + (i - (len(classes) - 1) / 2) * h, f"{vi:.0f}", va="center", fontsize=8, color=MUTED)
+
+    a.set_yticks(y, names)
+    a.invert_yaxis()
+    a.set_xlabel("particles (%)")
+    a.set_title("Match warnings per class", loc="left")
+    a.legend(loc="lower right")
+    a.grid(axis="y", visible=False)
+
+    # right: Fe per origin group
+    groups = origin_groups(ds)
+    counts = groups.value_counts()
+    names = sorted(counts[counts >= MIN_GROUP].index)
+    data = [ds.Fe_wt[groups == n].dropna().to_numpy() for n in names]
+    group_class = [ds.training_class[groups == n].iloc[0] for n in names]
+    hatch = ["//" if (ds.class_source[groups == n] != "type table").any() else "" for n in names]
+    labels = [f"{n}\n(n={int(counts[n])})" for n in names]
+
+    _boxes(b, data, labels, [colours[c] for c in group_class], hatch, "Fe in the EDS spectrum (wt%)",
+           "Matrix share of the spectrum per origin (high = weak particle signal)")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def chemistry_figure(chem: dict, path: Path):
+    """Heat map of section 4: share of particles with each element present (>= PRESENT_WT)
+    per origin group (groups with at least MIN_GROUP particles)."""
+    use_style()
+    share = chem["present_pct"]
+    share = share[share.n >= MIN_GROUP]
+    values = share.drop(columns="n")
+
+    fig, ax = plt.subplots(figsize=(1.0 + 0.62 * values.shape[1] + 3.5, 0.9 + 0.45 * len(values)))
+    im = ax.imshow(values.to_numpy(dtype=float), cmap="Blues", vmin=0, vmax=100, aspect="auto")
+
+    for i in range(values.shape[0]):
+        for j in range(values.shape[1]):
+            v = values.iat[i, j]
+            ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=8,
+                    color="white" if v >= 60 else TEXT)
+
+    ax.set_xticks(range(values.shape[1]), values.columns)
+    ax.set_yticks(range(len(values)), [f"{g}  (n={int(n)})" for g, n in share.n.items()])
+    ax.tick_params(length=0)
+    ax.grid(False)
+    ax.set_title(f"Particles with the element present (>= {PRESENT_WT:g} wt%, %), per training class (AZtec class); "
+                 f"without the matrix elements {', '.join(MATRIX_ELEMENTS)}", loc="left")
+    fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="%")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def model_origin_figure(ds: pd.DataFrame, tables: dict, note: str, path: Path):
+    """Figure of section 4: how the cross-validated model classifies each origin group
+    (stacked bars of the predicted classes, training / validation particles)."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    t = tables["by_origin"]
+    t = t[t.n >= MIN_GROUP]
+
+    fig, ax = plt.subplots(figsize=(13, 0.9 + 0.5 * len(t)))
+    y = np.arange(len(t))
+    left = np.zeros(len(t))
+
+    for c in classes:
+        v = t[f"predicted {c} (%)"].to_numpy(dtype=float)
+        ax.barh(y, v, left=left, height=0.65, color=colours[c], edgecolor="white", label=f"predicted {c}")
+
+        for yi, li, vi in zip(y, left, v):
+            if vi >= 8:
+                ax.text(li + vi / 2, yi, f"{vi:.0f}", ha="center", va="center", fontsize=8, color="white")
+
+        left += v
+
+    ax.set_yticks(y, [f"{g}  (n={int(n)})" for g, n in t.n.items()])
+    ax.invert_yaxis()
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("predicted as (%)")
+    ax.set_title(f"Logistic regression ({note}), cross-validated: prediction per training class (AZtec class)",
+                 loc="left")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12 - 0.25 / len(t)), ncol=len(classes))
+    ax.grid(axis="y", visible=False)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def section_label_quality(ds: pd.DataFrame, out: Path, log=print) -> dict:
+    """Section 4: writes 4_label_quality.xlsx, 4_suspicious.csv, 4_label_quality.png,
+    4_chemistry.png and 4_model_by_origin.png; prints the match warnings per class, the model
+    accuracy per origin group and for certain / uncertain matches."""
+    flags = label_flags(ds)
+    match = match_table(ds, flags)
+    chem = chemistry_tables(ds)
+
+    X, note = model_features(ds, out)
+    pred = model_predictions(ds, X)
+    model = model_tables(ds, flags, pred)
+    suspicious = suspicious_list(ds, flags, pred)
+
+    with pd.ExcelWriter(out / "4_label_quality.xlsx") as xw:
+        match.to_excel(xw, sheet_name="match_per_class")
+        chem["present_pct"].to_excel(xw, sheet_name="elements_present_pct")
+        chem["median_wt"].to_excel(xw, sheet_name="elements_median_wt")
+        chem["matrix"].to_excel(xw, sheet_name="matrix_elements")
+        model["by_origin"].to_excel(xw, sheet_name="model_by_origin")
+        model["by_flag"].to_excel(xw, sheet_name="model_by_match_warning")
+        pd.DataFrame([{"flag": k, "meaning": v} for k, v in FLAGS.items()]
+                     + [{"flag": "flag_model", "meaning": f"model gives the own class < {MODEL_DISAGREES:g} "
+                                                          f"and predicts another ({note})"}]
+                     ).to_excel(xw, sheet_name="definitions", index=False)
+
+    suspicious.to_csv(out / "4_suspicious.csv", index=False, float_format="%.3f")
+
+    label_quality_figure(ds, match, chem, out / "4_label_quality.png")
+    chemistry_figure(chem, out / "4_chemistry.png")
+    model_origin_figure(ds, model, note, out / "4_model_by_origin.png")
+
+    log("4. Label quality")
+    log(match[["n", "region_pct", "relaxed_pct", "flag_candidates_pct", "flag_neighbour_pct", "flag_size_pct",
+               "uncertain_pct", "distance_um_p50"]].to_string())
+    log(f"model ({note}), per origin group (training / validation particles):")
+    log(model["by_origin"].to_string())
+    log("correct (%) for certain and uncertain matches:")
+    log(model["by_flag"].to_string())
+    log(f"suspicious particles listed: {len(suspicious)} (4_suspicious.csv)")
+
+    return {"flags": flags, "match": match, "chemistry": chem, "model": model, "suspicious": suspicious}

@@ -9,6 +9,9 @@ one file group per section (prefix = section number):
        colour, pinkness, colour-only baseline; background and overexposure from the crops),
        3_crop_features.csv/.xlsx/.png, 3_crop_features_top.png (shape, interior and edge
        features from the crops, baselines adding them, best features for the confused pair)
+    4  label quality: 4_label_quality.xlsx, 4_label_quality.png, 4_chemistry.png,
+       4_model_by_origin.png, 4_suspicious.csv (match warnings, EDS per class and AZtec class,
+       model errors per origin and match warning, particles worth a look)
 
 Example:
     python scripts/dataset_report.py data/datasets/dataset_v1
@@ -20,9 +23,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from cii.report import section_appearance, section_composition, section_size
+from cii.report import section_appearance, section_composition, section_label_quality, section_size
 
-SECTIONS = {1: section_composition, 2: section_size, 3: section_appearance}
+SECTIONS = {1: section_composition, 2: section_size, 3: section_appearance, 4: section_label_quality}
 
 
 def main():

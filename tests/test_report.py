@@ -97,3 +97,47 @@ def test_appearance_section_with_crops(tmp_path):
     shape = cf["steps"].set_index("step")
     assert shape.loc["+ shape", "balanced_accuracy"] >= shape.loc["+ size", "balanced_accuracy"]
     assert cf["ranking"].set_index("feature").loc["shape_aspect_ratio", "auc"] > 0.95 or "B" not in cf["pair"]
+
+
+def test_label_quality_section(tmp_path):
+    from cii.report import label_flags, section_label_quality
+    rng = np.random.default_rng(3)
+    ds = toy_sized()
+    n = len(ds)
+
+    # colour: class B pink, the rest grey; EDS: O for A and C, N + Ti for B, Fe as matrix
+    pink = ds.training_class == "B"
+    ds["vhx_contrast_R_max"] = rng.normal(0.4, 0.03, n)
+    ds["vhx_contrast_G_max"] = np.where(pink, 0.7, 0.4) + rng.normal(0, 0.03, n)
+    ds["vhx_contrast_B_max"] = ds.vhx_contrast_R_max
+    ds["vhx_contrast_max"] = ds[["vhx_contrast_R_max", "vhx_contrast_G_max"]].max(axis=1)
+    for c in "RGB":
+        ds[f"vhx_mean_{c}"] = 150.0
+    ds["O_wt"] = np.where(pink, 0.0, 5.0)
+    ds["N_wt"] = np.where(pink, 8.0, 0.0)
+    ds["Ti_wt"] = np.where(pink, 30.0, 0.0)
+    ds["Mn_wt"] = 1.4
+    ds["Fe_wt"] = 100 - ds[["O_wt", "N_wt", "Ti_wt", "Mn_wt"]].sum(axis=1)
+
+    # match info: a few warnings
+    ds["match_type"] = rng.choice(["object", "region", "relaxed"], n, p=[0.8, 0.15, 0.05])
+    ds["n_candidates"] = rng.choice([1, 2], n, p=[0.95, 0.05])
+    ds["sem_neighbour"] = rng.random(n) < 0.05
+    ds["distance_um"] = rng.gamma(2, 0.2, n)
+    for c in ["sem_id", "field", "vhx_image", "Type"]:
+        ds[c] = np.arange(n)
+
+    flags = label_flags(ds)
+    assert flags.uncertain.equals(flags[["flag_relaxed", "flag_candidates", "flag_neighbour", "flag_size"]].any(axis=1))
+
+    r = section_label_quality(ds, tmp_path, log=lambda *a: None)
+    assert {f.name for f in tmp_path.iterdir()} == {"4_label_quality.xlsx", "4_suspicious.csv", "4_label_quality.png",
+                                                    "4_chemistry.png", "4_model_by_origin.png"}
+
+    share = r["chemistry"]["present_pct"]
+    assert "Fe" not in share.columns and "Mn" not in share.columns       # matrix elements left out
+    assert (share.loc[share.index.str.startswith("B ("), "Ti"] == 100).all()
+
+    by_origin = r["model"]["by_origin"]
+    assert (by_origin.loc[by_origin.index.str.startswith("B ("), "correct_pct"] > 90).all()
+    assert r["suspicious"].reasons.str.len().gt(0).all()
