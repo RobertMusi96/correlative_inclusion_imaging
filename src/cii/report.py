@@ -1598,9 +1598,46 @@ SEM_UM_PER_PX = 0.294864        # BSE pixel size of the AZtec fields (as in cii.
 VERDICTS = ["label correct (model wrong)", "label wrong", "wrong particle (match)", "mask wrong", "unclear"]
 
 
-def short_class(name: str, n: int = 12) -> str:
-    """Class name shortened for tile captions."""
-    return name if len(name) <= n else name[:n].rstrip() + "."
+CLASS_ABBREVIATIONS = {"Ca aluminate-based/Spinel": "CA/Spinel"}     # for tiles and small matrices
+
+
+def short_class(name: str) -> str:
+    """Class name for tile captions and small figures: the abbreviation from
+    CLASS_ABBREVIATIONS, otherwise the full name. Also replaces the class names inside longer
+    text such as 'Ca aluminate-based/Spinel (OS)'."""
+    for full, short in CLASS_ABBREVIATIONS.items():
+        name = name.replace(full, short)
+    return name
+
+
+def tile_grid(nrow: int, ncol: int, tile_in: float, caption_lines: int, fontsize: float,
+              gap_in: float = 0.15, header_in: float = 0.45):
+    """Figure with nrow x ncol square tiles of tile_in inches and room for a caption of
+    caption_lines lines above each tile (fixed spacing in inches, so captions never run into
+    the row above). Returns the figure and the axes array (all switched off)."""
+    caption_in = caption_lines * fontsize * 1.3 / 72 + 0.06
+    cell_w = tile_in + gap_in
+    cell_h = tile_in + caption_in + gap_in
+    width = ncol * cell_w + gap_in
+    height = header_in + nrow * cell_h
+
+    fig = plt.figure(figsize=(width, height))
+    axes = np.empty((nrow, ncol), dtype=object)
+
+    for i in range(nrow):
+        for j in range(ncol):
+            left = gap_in + j * cell_w
+            bottom = height - header_in - i * cell_h - caption_in - tile_in
+            ax = fig.add_axes([left / width, bottom / height, tile_in / width, tile_in / height])
+            ax.axis("off")
+            axes[i, j] = ax
+
+    return fig, axes
+
+
+def tile_header(fig, text: str, fontsize: float = 11):
+    """Grey title line at the top left of a tile figure (0.15 inch from the top)."""
+    fig.suptitle(text, x=0.01, y=1 - 0.15 / fig.get_figheight(), ha="left", va="top", color=MUTED, fontsize=fontsize)
 
 
 def baseline_sets(ds: pd.DataFrame, X: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -1680,8 +1717,8 @@ def baselines_figure(table: pd.DataFrame, confusion: dict, path: Path):
             v = cm.iat[i, j]
             b.text(j, i, f"{v:.0f}", ha="center", va="center", color="white" if v >= 60 else TEXT)
 
-    b.set_xticks(range(cm.shape[1]), [short_class(c, 16) for c in cm.columns], rotation=20, ha="right")
-    b.set_yticks(range(cm.shape[0]), [short_class(c, 16) for c in cm.index])
+    b.set_xticks(range(cm.shape[1]), [short_class(c) for c in cm.columns], rotation=20, ha="right")
+    b.set_yticks(range(cm.shape[0]), [short_class(c) for c in cm.index])
     b.set_xlabel("predicted")
     b.set_ylabel("true")
     b.grid(False)
@@ -1723,19 +1760,15 @@ def gallery_figure(ds: pd.DataFrame, root: Path, rows: pd.DataFrame, title: str,
     use_style()
     colours = class_colours(class_order(ds))
     nrow = int(np.ceil(len(rows) / cols))
-    fig, axes = plt.subplots(nrow, cols, figsize=(1.9 * cols, 2.15 * nrow + 0.4), squeeze=False)
-
-    for ax in axes.flat:
-        ax.axis("off")
+    fig, axes = tile_grid(nrow, cols, tile_in=1.9, caption_lines=2, fontsize=9)
 
     for ax, r in zip(axes.flat, rows.itertuples()):
         ax.axis("on")
         crop_tile(ax, root, r, colours[r.training_class])
-        ax.set_title(f"#{r.sem_id}\nSEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm", fontsize=7)
+        ax.set_title(f"#{r.sem_id}\nSEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm", fontsize=9, pad=3)
 
     um = float(rows.crop_size_px.iloc[0] * rows.um_per_px.iloc[0])
-    fig.suptitle(f"{title}  (tile {um:.1f} µm wide; line = mask)", x=0.01, ha="left", color=MUTED)
-    fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
+    tile_header(fig, f"{short_class(title)}  (tile {um:.1f} µm wide; line = mask)")
     save_figure(fig, path, dpi=130)
     plt.close(fig)
 
@@ -1861,10 +1894,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
         page_no = p0 // FLAGGED_PER_PAGE + 1
         nrow = int(np.ceil(len(page) / per_row))
         ncol = per_row * (2 if bse else 1)
-        fig, axes = plt.subplots(nrow, ncol, figsize=(1.95 * ncol, 2.6 * nrow + 0.5), squeeze=False)
-
-        for ax in axes.flat:
-            ax.axis("off")
+        fig, axes = tile_grid(nrow, ncol, tile_in=2.2, caption_lines=4, fontsize=8.5)
 
         for k, r in enumerate(page.itertuples()):
             row, col = divmod(k, per_row)
@@ -1877,20 +1907,18 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
                        f"{short_class(r.training_class)} → {short_class(r.predicted)}\n"
                        f"p(label) {r.p_own:.2f} · p(predicted) {r.p_predicted:.2f}\n"
                        f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm")
-            av.set_title(caption, fontsize=6)
+            av.set_title(caption, fontsize=8.5, pad=3)
 
             if bse:
                 ab = axes[row, col * 2 + 1]
                 ab.axis("on")
                 bse_tile(ab, bse, cache, r, float(r.crop_size_px * r.um_per_px))
-                ab.set_title(f"BSE, field {r.field}\n{r.match_warnings or 'no match warning'}", fontsize=6)
+                ab.set_title(f"BSE, field {r.field}\n{r.match_warnings or 'no match warning'}", fontsize=8.5, pad=3)
 
         um = float(page.crop_size_px.iloc[0] * page.um_per_px.iloc[0])
         what = "VHX crop with mask | BSE with SEM box" if bse else "VHX crop with mask"
-        fig.suptitle(f"Model-flagged particles, page {page_no}: label → predicted class; p = out-of-fold "
-                     f"model probability of the label and of the predicted class; "
-                     f"{what}; {um:.1f} µm wide", x=0.01, ha="left", color=MUTED, fontsize=9)
-        fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
+        tile_header(fig, f"Model-flagged particles, page {page_no}: label → predicted class; p = out-of-fold "
+                         f"model probability of the label and of the predicted class; {what}; {um:.1f} µm wide")
 
         path = out / f"6_flagged_{page_no:02d}.png"
         save_figure(fig, path, dpi=140)
