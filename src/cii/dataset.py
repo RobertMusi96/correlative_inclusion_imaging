@@ -9,7 +9,11 @@ matched VHX object (on the region box centre for region matches). Near the
 image border the window is shifted inwards so that it holds only real pixels;
 ``crop_col0`` / ``crop_row0`` give its position. Masks: the matched object
 (or, for region matches, its region) from the label images of
-detect_inclusions.py, 255 = particle, 0 = rest.
+detect_inclusions.py, 255 = particle, 0 = rest. Particles whose mask (object,
+or region for region matches) touches the border of the VHX image are left out:
+only part of them was recorded, so crop, mask and size would be wrong. (The
+matching prefers a complete view in overlapping images, but keeps a cut one
+when there is no other.)
 
 Split: the particles are grouped in square blocks of ``block_um`` (by their
 VHX stage position), so that neighbouring particles and overlapping VHX images
@@ -95,6 +99,12 @@ def assign_splits(classes: np.ndarray, groups: np.ndarray, p: ExportParams) -> t
     return split, fold
 
 
+def touches_border(labels: np.ndarray, value: int) -> bool:
+    """True if the label `value` reaches the outermost row or column of the label image."""
+    edges = np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+    return bool((edges == value).any())
+
+
 def find_object(obj: pd.DataFrame, img_objects: pd.DataFrame | None, img_name: str, r: pd.Series,
                 max_px: float = 0.5):
     """(label, region) of the matched VHX object in the label images, and whether it had to be
@@ -172,6 +182,10 @@ def export_dataset(particles: pd.DataFrame, vhx_obj: pd.DataFrame, vhx_img: pd.D
                 mask_full, mask_kind = regions, reg_id
             else:
                 mask_full, mask_kind = objects, lab_id
+
+            if touches_border(mask_full, mask_kind):
+                skipped["particle cut by the VHX image border"] = skipped.get("particle cut by the VHX image border", 0) + 1
+                continue
 
             cc, rr = crop_centre(r)
             c0, r0 = crop_window(cc, rr, p.crop_px, w, h)

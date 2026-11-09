@@ -26,6 +26,16 @@ def test_split_stratified_and_blocks_kept_whole():
         assert all(((cls == c) & (fold == k)).any() for k in range(5))
 
 
+def test_touches_border():
+    from cii.dataset import touches_border
+    lab = np.zeros((20, 30), int)
+    lab[5:8, 5:8] = 1                                   # inside
+    lab[17:20, 10:14] = 2                               # cut by the bottom border
+    lab[3:6, 27:30] = 3                                 # cut by the right border
+    assert not touches_border(lab, 1)
+    assert touches_border(lab, 2) and touches_border(lab, 3)
+
+
 def test_find_object_by_id_or_position():
     objs = pd.DataFrame({"image": "a.tif", "id": [1, 2], "label": [10, 20], "region": [5, 6],
                          "col_px": [100.0, 300.0], "row_px": [50.0, 80.0]})

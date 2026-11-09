@@ -249,6 +249,9 @@ as `test`; the rest (`trainval`) gets `fold` 0-4 for cross-validation (one fold
 validation, the others training), `fold` -1 for test. The matched object is
 checked by position against objects.csv (ids of equally large objects may differ
 between detection runs; since version 0.3.0 equal areas are ordered by position).
+Particles whose mask (object, or region for region matches) touches the border of
+the VHX image are left out, because only part of them was recorded (reported as
+"skipped: ... particle cut by the VHX image border").
 
 ### `scripts/dataset_report.py`
 
