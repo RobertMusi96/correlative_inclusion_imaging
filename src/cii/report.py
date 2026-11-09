@@ -339,7 +339,7 @@ def size_figure(ds: pd.DataFrame, base: dict, path: Path):
     ax.set_title("Size in the light microscope vs SEM", loc="left")
     ax.grid(axis="y", visible=False)
 
-    fig.suptitle(f"Size-only baseline (VHX ECD, cross-validated): balanced accuracy "
+    fig.suptitle(f"Size-only baseline (logistic regression on the VHX ECD, cross-validated): balanced accuracy "
                  f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -547,7 +547,8 @@ def appearance_figure(ds: pd.DataFrame, base: dict, path: Path):
     ax.set_title("Pinkness against contrast (every particle)", loc="left")
     ax.legend(loc="upper right")
 
-    fig.suptitle(f"Colour-only baseline (contrast + colour, no size, cross-validated): balanced accuracy "
+    fig.suptitle(f"Colour-only baseline (logistic regression on contrast + colour, no size, cross-validated): "
+                 f"balanced accuracy "
                  f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -730,7 +731,7 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
     a.set_xticks(x, steps.step, rotation=20, ha="right")
     a.set_ylim(min(30, 100 * chance - 5), 100)
     a.set_ylabel("balanced accuracy (%)")
-    a.set_title("Adding one feature group after the other (cross-validated)", loc="left")
+    a.set_title("Logistic regression, adding one feature group after the other", loc="left")
     a.legend(loc="lower right")
     a.grid(axis="x", visible=False)
 
@@ -748,7 +749,10 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
     b.set_title(f"Best single features: {pair[0]} vs {pair[1]}", loc="left")
     b.grid(axis="y", visible=False)
 
-    fig.tight_layout()
+    fig.suptitle("Baselines: logistic regression (class weights balanced, features standardised), "
+                 "cross-validated over the folds, test set not used. Feature ranking: each feature alone (AUC).",
+                 x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -777,7 +781,10 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
     for ax in axes.ravel()[len(top):]:
         ax.set_visible(False)
 
-    fig.tight_layout()
+    fig.suptitle("Crop features ranked by how well each alone separates the confused pair (AUC); "
+                 "the logistic regression baselines on all features are in 3_crop_features.png",
+                 x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.3 / fig.get_figheight()))
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
