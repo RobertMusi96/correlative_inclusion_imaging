@@ -1835,19 +1835,22 @@ def bse_lookup(ds: pd.DataFrame, root: Path, bse_dir: Path | None, matches: Path
     return {"images": bse_paths(Path(bse_dir)), "boxes": boxes}
 
 
-def load_bse_raw(path) -> np.ndarray:
-    """BSE image as float, not stretched (the tiles are stretched locally)."""
+def load_bse_raw(path) -> tuple[np.ndarray, float]:
+    """BSE image as float with its original grey values (no normalisation) and the largest
+    value of its data type (65535 for 16 bit, 255 for 8 bit), used as white."""
     import tifffile
 
-    a = tifffile.imread(path).astype(np.float32)
-    return a[..., 0] if a.ndim == 3 else a
+    a = tifffile.imread(path)
+    white = float(np.iinfo(a.dtype).max) if a.dtype.kind in "ui" else float(np.nanmax(a))
+    a = a.astype(np.float32)
+    return (a[..., 0] if a.ndim == 3 else a), white
 
 
 def bse_tile(ax, bse: dict, cache, r, width_um: float):
     """BSE image of the particle's SEM field around its bounding box (same width in µm as the
-    VHX crop), stretched between the 0.5 and 99.5 % percentiles of the tile (so the inside of
-    the particle stays visible), with the SEM bounding box; outside the field white; a note if
-    the image is missing."""
+    VHX crop) with its original grey values, not normalised: black = 0, white = largest value of
+    the data type, the same for every tile. SEM bounding box drawn; outside the field white; a
+    note if the image is missing."""
     from matplotlib.patches import Rectangle
 
     ax.set_xticks([])
@@ -1859,7 +1862,7 @@ def bse_tile(ax, bse: dict, cache, r, width_um: float):
         return
 
     b = bse["boxes"].loc[r.sem_id]
-    img = cache.get(bse["images"][r.field])
+    img, white = cache.get(bse["images"][r.field])
     h, w = img.shape
 
     half = width_um / 2 / SEM_UM_PER_PX
@@ -1873,9 +1876,8 @@ def bse_tile(ax, bse: dict, cache, r, width_um: float):
     if xe > xs and ye > ys:
         tile[ys - y0:ye - y0, xs - x0:xe - x0] = img[ys:ye, xs:xe]
 
-    lo, hi = np.nanpercentile(tile, [0.5, 99.5]) if np.isfinite(tile).any() else (0, 1)
     cmap = plt.get_cmap("gray").with_extremes(bad="white")
-    ax.imshow((tile - lo) / max(hi - lo, 1e-6), cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
+    ax.imshow(tile, cmap=cmap, vmin=0, vmax=white, interpolation="nearest")
     ax.add_patch(Rectangle((b.bb_left_px - x0 - 0.5, b.bb_top_px - y0 - 0.5), b.bb_width_px, b.bb_height_px,
                            fill=False, ec="#e8590c", lw=0.7))
 
