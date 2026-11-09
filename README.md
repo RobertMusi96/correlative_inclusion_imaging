@@ -287,9 +287,27 @@ section by section; `--sections 1,2` runs a selection):
    `4_suspicious.csv`: particles with a match warning or where the model
    confidently disagrees with the label, for review (`4_label_quality.xlsx`,
    `4_label_quality.png`, `4_chemistry.png`, `4_model_by_origin.png`).
+5. Spatial distribution and split: particle map with the split blocks (test
+   blocks shaded), spatial clustering of the classes (share of particles whose
+   nearest neighbour has the same class against the share expected without
+   clustering; chi-square test and Cramér's V of classes against blocks),
+   distance of the test particles to the nearest training / validation particle,
+   position-only baseline (logistic regression on x, y, x², y², xy), and medians
+   and Kolmogorov-Smirnov tests of VHX ECD, contrast and pinkness between test
+   set and folds (`5_spatial.xlsx`, `5_map.png`, `5_split.png`).
+6. Baselines and visual check: logistic regression on size only, colour only and
+   all features, gradient boosting on all features; cross-validated over the
+   folds and, fitted on all training / validation particles, evaluated once on
+   the test set (`6_baselines.xlsx`, `6_baselines.png`). From the crops: a
+   gallery per origin group (24 random crops with mask outline,
+   `6_gallery_*.png`) and pages of the particles the model confidently disagrees
+   with (`6_flagged_*.png`; with `--bse <folder>` next to the BSE image of the
+   SEM field, SEM boxes from the matches.csv in `dataset_info.json` or
+   `--matches`), with `6_flagged_review.xlsx` for verdicts (kept on reruns).
 
 ```bash
 python scripts/dataset_report.py data/datasets/dataset_v1
+python scripts/dataset_report.py data/datasets/dataset_v1 --sections 6 --bse "D:\SEM\MnB\images"
 ```
 
 ## Results so far

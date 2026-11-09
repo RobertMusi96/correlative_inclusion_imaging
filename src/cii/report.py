@@ -22,6 +22,15 @@ Built section by section; each section writes its tables and figures into
    original AZtec class (elements present, Fe share = weak particle signal),
    how the cross-validated model classifies each origin group and certain /
    uncertain matches, and a list of suspicious particles for review.
+5. Spatial distribution and split: particle map with the split blocks, spatial
+   clustering of the classes (nearest neighbour, classes vs blocks), distance of
+   the test set to the training data, a position-only baseline, and how alike
+   the test set and the folds are (medians, Kolmogorov-Smirnov tests).
+6. Baselines and visual check: logistic regression on size only, colour only and
+   all features, and gradient boosting on all features, cross-validated and
+   evaluated once on the test set; crop galleries per origin group; pages of the
+   particles the model confidently disagrees with (VHX crop, optionally next to
+   the BSE image) and a review sheet for them.
 """
 from __future__ import annotations
 
@@ -612,15 +621,29 @@ def feature_table(ds: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, 
     return pd.concat([colour, size, crop], axis=1), group
 
 
-def cv_balanced_accuracy(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> tuple[np.ndarray, np.ndarray]:
-    """Logistic regression (missing values -> median, standardised, class weights balanced),
-    cross-validated over the folds. Returns the balanced accuracy per fold and the
-    out-of-fold prediction of every particle."""
+def make_model(kind: str = "logistic"):
+    """Baseline model. 'logistic': logistic regression (missing values -> median, standardised,
+    class weights balanced). 'boosting': gradient-boosted trees (HistGradientBoostingClassifier,
+    class weights balanced, default settings, seed 0; handles missing values itself)."""
+    from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import balanced_accuracy_score
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
+
+    if kind == "boosting":
+        return HistGradientBoostingClassifier(class_weight="balanced", random_state=0)
+
+    return make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
+                         LogisticRegression(class_weight="balanced", max_iter=3000))
+
+
+def cv_balanced_accuracy(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list,
+                         kind: str = "logistic") -> tuple[np.ndarray, np.ndarray]:
+    """Baseline model (make_model(kind), default logistic regression) cross-validated over the
+    folds. Returns the balanced accuracy per fold and the out-of-fold prediction of every
+    particle."""
+    from sklearn.metrics import balanced_accuracy_score
 
     pred = np.empty(len(y), dtype=object)
     scores = []
@@ -631,8 +654,7 @@ def cv_balanced_accuracy(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classe
         if len(np.unique(y[~val])) < 2:
             continue                                      # tiny datasets: fold without a second class
 
-        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
-                              LogisticRegression(class_weight="balanced", max_iter=3000))
+        model = make_model(kind)
         model.fit(X[~val], y[~val])
         pred[val] = model.predict(X[val])
         scores.append(balanced_accuracy_score(y[val], pred[val]))
@@ -1024,11 +1046,6 @@ def model_features(ds: pd.DataFrame, out: Path) -> tuple[pd.DataFrame, str]:
 def cv_probabilities(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> np.ndarray:
     """Out-of-fold class probabilities (n x classes) of the section 3 model (logistic
     regression, median for missing values, standardised, balanced class weights)."""
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-
     proba = np.full((len(y), len(classes)), np.nan)
 
     for k in sorted(np.unique(folds)):
@@ -1037,8 +1054,7 @@ def cv_probabilities(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: l
         if len(np.unique(y[~val])) < 2:
             continue
 
-        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
-                              LogisticRegression(class_weight="balanced", max_iter=3000))
+        model = make_model("logistic")
         model.fit(X[~val], y[~val])
 
         cols = [classes.index(c) for c in model.classes_]
@@ -1265,3 +1281,668 @@ def section_label_quality(ds: pd.DataFrame, out: Path, log=print) -> dict:
     log(f"suspicious particles listed: {len(suspicious)} (4_suspicious.csv)")
 
     return {"flags": flags, "match": match, "chemistry": chem, "model": model, "suspicious": suspicious}
+
+
+# ---------------------------------------------------------------------------
+# 5. Spatial distribution and split: where the particles lie, whether the classes
+#    cluster in space, and whether the test set and the folds look alike
+
+SPLIT_FEATURES = {"vhx_ecd_um": "VHX ECD (µm)", "vhx_contrast_max": "contrast (darkest point)",
+                  "pinkness": "pinkness (green / red contrast)"}
+
+
+def block_size_um(root: Path, default: float = 1000.0) -> float:
+    """Side of the spatial blocks used for the split, from dataset_info.json (default if missing)."""
+    import json
+
+    info = Path(root) / "dataset_info.json"
+    if not info.exists():
+        return default
+
+    return float(json.loads(info.read_text()).get("params", {}).get("block_um", default))
+
+
+def block_grid(ds: pd.DataFrame, block_um: float) -> pd.DataFrame:
+    """One row per block: its lower-left corner (stage µm, as in cii.dataset.spatial_groups),
+    part ('test' or 'fold k'), number of particles and the class counts."""
+    bx = np.floor((ds.vhx_x_um - ds.vhx_x_um.min()) / block_um).astype(int)
+    by = np.floor((ds.vhx_y_um - ds.vhx_y_um.min()) / block_um).astype(int)
+
+    d = pd.DataFrame({"block": ds.block, "bx": bx, "by": by, "part": part_label(ds), "cls": ds.training_class})
+    grid = d.groupby("block").agg(bx=("bx", "first"), by=("by", "first"), part=("part", "first"), n=("cls", "size"))
+    grid["x0_um"] = ds.vhx_x_um.min() + grid.bx * block_um
+    grid["y0_um"] = ds.vhx_y_um.min() + grid.by * block_um
+
+    counts = pd.crosstab(d.block, d.cls).reindex(columns=class_order(ds), fill_value=0)
+    return grid.join(counts)
+
+
+def part_medians(ds: pd.DataFrame) -> pd.DataFrame:
+    """Median VHX ECD, contrast and pinkness per part (test, fold 0..k) and class, with n."""
+    d = add_pinkness(ds).assign(part=part_label(ds))
+    g = d.groupby(["part", "training_class"])
+    out = g[list(SPLIT_FEATURES)].median().round(3)
+    out.insert(0, "n", g.size())
+    return out
+
+
+def part_ks(ds: pd.DataFrame) -> pd.DataFrame:
+    """Two-sample Kolmogorov-Smirnov test per class and feature: test set against
+    training / validation, and each fold against the other folds (the fold with the largest D
+    and its p-value, not corrected for picking the largest of k). D = largest distance between
+    the two cumulative distributions."""
+    from scipy.stats import ks_2samp
+
+    d = add_pinkness(ds)
+    rows = []
+
+    for c in class_order(ds):
+        dc = d[d.training_class == c]
+        tv = dc[dc.split == "trainval"]
+
+        for f, label in SPLIT_FEATURES.items():
+            row = {"training_class": c, "feature": label}
+
+            test = dc.loc[dc.split == "test", f].dropna()
+            if len(test) >= 5:
+                r = ks_2samp(test, tv[f].dropna())
+                row.update({"test_vs_trainval_D": round(r.statistic, 3), "test_vs_trainval_p": round(r.pvalue, 4)})
+
+            worst = None
+            for k in sorted(tv.fold.unique()):
+                a = tv.loc[tv.fold == k, f].dropna()
+                b = tv.loc[tv.fold != k, f].dropna()
+                if len(a) >= 5 and len(b) >= 5:
+                    r = ks_2samp(a, b)
+                    if worst is None or r.statistic > worst[1]:
+                        worst = (k, r.statistic, r.pvalue)
+
+            if worst is not None:
+                row.update({"worst_fold": int(worst[0]), "fold_vs_rest_D": round(worst[1], 3),
+                            "fold_vs_rest_p_uncorrected": round(worst[2], 4)})
+
+            rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def spatial_clustering(ds: pd.DataFrame, blocks: pd.DataFrame) -> dict:
+    """Do the classes cluster in space? (1) Nearest neighbour: share of particles whose nearest
+    other particle has the same class, against the share expected without clustering,
+    (n_class - 1) / (n - 1). (2) Classes against blocks: chi-square test and Cramér's V
+    (0 = same class mix in every block, 1 = every block holds one class)."""
+    from scipy.spatial import cKDTree
+    from scipy.stats import chi2_contingency
+
+    xy = ds[["vhx_x_um", "vhx_y_um"]].to_numpy()
+    cls = ds.training_class.to_numpy()
+    dist, idx = cKDTree(xy).query(xy, k=2)
+    same = cls[idx[:, 1]] == cls
+
+    rows = []
+    for c in class_order(ds):
+        sel = cls == c
+        rows.append({"training_class": c, "n": int(sel.sum()),
+                     "nn_same_class_pct": round(100 * float(same[sel].mean()), 1),
+                     "expected_pct": round(100 * (sel.sum() - 1) / (len(cls) - 1), 1),
+                     "nn_distance_um_p50": round(float(np.median(dist[sel, 1])), 1)})
+
+    table = blocks[class_order(ds)].to_numpy()
+    table = table[table.sum(axis=1) > 0]
+    chi2, p, dof, _ = chi2_contingency(table)
+    v = np.sqrt(chi2 / (table.sum() * (min(table.shape) - 1)))
+
+    blocks_test = {"n_blocks": int(len(table)), "chi2": round(float(chi2), 1), "dof": int(dof),
+                   "p": float(f"{p:.3g}"), "cramers_v": round(float(v), 3)}
+
+    return {"nearest_neighbour": pd.DataFrame(rows).set_index("training_class"), "blocks": blocks_test}
+
+
+def test_distance(ds: pd.DataFrame) -> dict:
+    """Distance (µm) of each test particle to the nearest training / validation particle:
+    how far the test set is from what the model has seen (spatial leakage check)."""
+    from scipy.spatial import cKDTree
+
+    test = (ds.split == "test").to_numpy()
+    xy = ds[["vhx_x_um", "vhx_y_um"]].to_numpy()
+
+    if not test.any() or test.all():
+        return {}
+
+    d, _ = cKDTree(xy[~test]).query(xy[test])
+    return {"n_test": int(test.sum()), "min_um": round(float(d.min()), 1), "p10_um": round(float(np.percentile(d, 10)), 1),
+            "median_um": round(float(np.median(d)), 1), "max_um": round(float(d.max()), 1)}
+
+
+def position_baseline(ds: pd.DataFrame) -> dict:
+    """Position-only baseline: logistic regression on the stage position (x, y, x², y², xy),
+    cross-validated over the folds. Above chance only if the class mix changes across the
+    sample on a scale larger than the blocks (e.g. segregation)."""
+    tv = (ds.split == "trainval").to_numpy()
+    x = (ds.vhx_x_um - ds.vhx_x_um.mean()) / 1000.0
+    y = (ds.vhx_y_um - ds.vhx_y_um.mean()) / 1000.0
+    X = np.c_[x, y, x ** 2, y ** 2, x * y][tv]
+
+    scores, _ = cv_balanced_accuracy(X, ds.training_class.to_numpy()[tv], ds.fold.to_numpy()[tv], class_order(ds))
+    return {"balanced_accuracy": round(float(scores.mean()), 3), "per_fold": ", ".join(map(str, scores)),
+            "chance": round(1 / ds.training_class.nunique(), 3)}
+
+
+def map_figure(ds: pd.DataFrame, blocks: pd.DataFrame, block_um: float, path: Path):
+    """Figure of section 5: every particle at its stage position, coloured by class, on the
+    grid of split blocks; test blocks shaded, each block labelled T (test) or its fold number."""
+    from matplotlib.patches import Rectangle
+
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+
+    w = (ds.vhx_x_um.max() - ds.vhx_x_um.min()) / 1000
+    h = (ds.vhx_y_um.max() - ds.vhx_y_um.min()) / 1000
+    fig, ax = plt.subplots(figsize=(16, 1.6 + 11.0 * h / max(w, h)))
+
+    for _, b in blocks.iterrows():
+        test = b.part == "test"
+        ax.add_patch(Rectangle((b.x0_um / 1000, b.y0_um / 1000), block_um / 1000, block_um / 1000,
+                               facecolor="#d9d9d9" if test else "none", edgecolor="#bdbdbd", linewidth=0.6, zorder=0))
+        tag = "T" if test else b.part.removeprefix("fold ")
+        ax.text(b.x0_um / 1000 + 0.04, b.y0_um / 1000 + block_um / 1000 - 0.04, tag, ha="left", va="top",
+                fontsize=8, color=MUTED, zorder=1)
+
+    for c in classes:
+        sel = ds.training_class == c
+        ax.scatter(ds.vhx_x_um[sel] / 1000, ds.vhx_y_um[sel] / 1000, s=5, color=colours[c], linewidths=0,
+                   label=f"{c} (n={int(sel.sum())})", zorder=2)
+
+    ax.set_aspect("equal")
+    ax.set_xlabel("stage x (mm)")
+    ax.set_ylabel("stage y (mm)")
+    ax.grid(False)
+    ax.set_title(f"Particles by class; {block_um / 1000:g} mm blocks of the split (grey, T = test set; "
+                 f"number = cross-validation fold)", loc="left")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), markerscale=3)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def split_figure(ds: pd.DataFrame, ks: pd.DataFrame, path: Path):
+    """Figure of section 5: median and quartiles of VHX ECD, contrast and pinkness per part of
+    the split (test set and folds) and class: the parts should look alike."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    d = add_pinkness(ds).assign(part=part_label(ds))
+    parts = ["test"] + sorted(p for p in d.part.unique() if p != "test")
+
+    fig, axes = plt.subplots(1, len(SPLIT_FEATURES), figsize=(17, 1.6 + 0.55 * len(parts)), sharey=True)
+    off = 0.6 / max(len(classes) - 1, 1)
+
+    for ax, (f, label) in zip(axes, SPLIT_FEATURES.items()):
+        for i, c in enumerate(classes):
+            for j, part in enumerate(parts):
+                v = d.loc[(d.part == part) & (d.training_class == c), f].dropna()
+                if not len(v):
+                    continue
+                q1, q2, q3 = np.percentile(v, [25, 50, 75])
+                yy = j + (i - (len(classes) - 1) / 2) * off
+                ax.plot([q1, q3], [yy, yy], color=colours[c], linewidth=2, solid_capstyle="butt")
+                ax.plot(q2, yy, "o", color=colours[c], markersize=4, label=c if j == 0 else None)
+
+        ax.set_yticks(range(len(parts)), parts)
+        ax.invert_yaxis()
+        ax.set_xlabel(label)
+        ax.grid(axis="y", visible=False)
+
+    axes[0].set_title("Median (dot) and quartiles (line) per part of the split", loc="left")
+    axes[-1].legend(loc="upper left", bbox_to_anchor=(1.01, 1))
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
+    """Section 5: writes 5_spatial.xlsx, 5_map.png and 5_split.png; prints the spatial
+    clustering, the distance of the test set to the training data, the position-only
+    baseline and the largest differences between the parts of the split."""
+    block_um = block_size_um(out.parent)
+    blocks = block_grid(ds, block_um)
+    medians = part_medians(ds)
+    ks = part_ks(ds)
+    clus = spatial_clustering(ds, blocks)
+    dist = test_distance(ds)
+    pos = position_baseline(ds)
+
+    with pd.ExcelWriter(out / "5_spatial.xlsx") as xw:
+        clus["nearest_neighbour"].to_excel(xw, sheet_name="nearest_neighbour")
+        pd.DataFrame([clus["blocks"]]).to_excel(xw, sheet_name="classes_vs_blocks", index=False)
+        pd.DataFrame([dist]).to_excel(xw, sheet_name="test_distance", index=False)
+        pd.DataFrame([pos]).to_excel(xw, sheet_name="position_baseline", index=False)
+        ks.to_excel(xw, sheet_name="ks_parts", index=False)
+        medians.to_excel(xw, sheet_name="medians_per_part")
+        blocks.drop(columns=["bx", "by"]).to_excel(xw, sheet_name="blocks")
+
+    map_figure(ds, blocks, block_um, out / "5_map.png")
+    split_figure(ds, ks, out / "5_split.png")
+
+    b = clus["blocks"]
+    log("5. Spatial distribution and split")
+    log(f"{b['n_blocks']} blocks of {block_um:g} µm; classes vs blocks: chi2 {b['chi2']} (dof {b['dof']}), "
+        f"p {b['p']:.3g}, Cramér's V {b['cramers_v']}")
+    log("nearest neighbour of the same class (%), observed and expected without clustering:")
+    log(clus["nearest_neighbour"].to_string())
+    if dist:
+        log(f"test particles to the nearest training / validation particle: median {dist['median_um']} µm, "
+            f"min {dist['min_um']} µm")
+    log(f"position-only baseline (logistic regression on x, y, x², y², xy): balanced accuracy "
+        f"{100 * pos['balanced_accuracy']:.0f} % (chance {100 * pos['chance']:.0f} %)")
+    log("largest KS distances between parts of the split:")
+    log(ks.to_string(index=False))
+
+    return {"blocks": blocks, "medians": medians, "ks": ks, "clustering": clus, "test_distance": dist,
+            "position_baseline": pos}
+
+
+# ---------------------------------------------------------------------------
+# 6. Baselines and visual check: final tabular baselines (cross-validation and the
+#    held-out test set), crop galleries per origin group, and the particles the model
+#    confidently disagrees with, next to their BSE image for review
+
+GALLERY_N = 24                  # crops per origin group in the galleries (random, seed 0)
+FLAGGED_PER_PAGE = 24           # model-flagged particles per page
+SEM_UM_PER_PX = 0.294864        # BSE pixel size of the AZtec fields (as in cii.matching_figures)
+VERDICTS = ["label correct (model wrong)", "label wrong", "wrong particle (match)", "mask wrong", "unclear"]
+
+
+def short_class(name: str, n: int = 12) -> str:
+    """Class name shortened for tile captions."""
+    return name if len(name) <= n else name[:n].rstrip() + "."
+
+
+def baseline_sets(ds: pd.DataFrame, X: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Feature sets of the final baselines: size only (log VHX ECD and its square), colour
+    only, and all features of the section 3 / 4 model."""
+    log_ecd = np.log(ds.vhx_ecd_um.clip(lower=0.1))
+    size = pd.DataFrame({"log_vhx_ecd": log_ecd, "log_vhx_ecd_sq": log_ecd ** 2}, index=ds.index)
+
+    return {"size only": size, "colour only": colour_columns(ds), "all features": X}
+
+
+def test_score(X: np.ndarray, y: np.ndarray, is_test: np.ndarray, classes: list, kind: str) -> tuple[float, pd.DataFrame]:
+    """Fits the model on all training / validation particles and evaluates it once on the
+    test set: balanced accuracy and confusion matrix (% of each true class)."""
+    from sklearn.metrics import balanced_accuracy_score
+
+    model = make_model(kind)
+    model.fit(X[~is_test], y[~is_test])
+    pred = model.predict(X[is_test])
+
+    cm = pd.crosstab(pd.Series(y[is_test], name="true"), pd.Series(pred, name="predicted"), normalize="index")
+    cm = (100 * cm.reindex(index=classes, columns=classes, fill_value=0)).round(1)
+
+    return float(balanced_accuracy_score(y[is_test], pred)), cm
+
+
+def final_baselines(ds: pd.DataFrame, X: pd.DataFrame, note: str) -> tuple[pd.DataFrame, dict]:
+    """Baselines for later models: logistic regression on size only, colour only and all
+    features, and gradient-boosted trees on all features. Cross-validated over the folds
+    (mean, SD, per fold) and, fitted on all training / validation particles, evaluated once
+    on the test set. Returns the table and the test confusion matrices."""
+    classes = class_order(ds)
+    tv = (ds.split == "trainval").to_numpy()
+    y = ds.training_class.to_numpy()
+    is_test = ~tv
+
+    runs = [(name, "logistic") for name in baseline_sets(ds, X)] + [("all features", "boosting")]
+    sets = baseline_sets(ds, X)
+    rows, confusion = [], {}
+
+    for name, kind in runs:
+        Xa = sets[name].to_numpy(dtype=float)
+        scores, _ = cv_balanced_accuracy(Xa[tv], y[tv], ds.fold.to_numpy()[tv], classes, kind)
+        model_name = "logistic regression" if kind == "logistic" else "gradient boosting"
+        label = f"{name} ({model_name})"
+
+        row = {"baseline": label, "features": note if name == "all features" else name,
+               "n_features": Xa.shape[1], "cv_balanced_accuracy": round(float(scores.mean()), 3),
+               "cv_sd": round(float(scores.std(ddof=1)), 3) if len(scores) > 1 else np.nan,
+               "cv_per_fold": ", ".join(map(str, scores))}
+
+        if is_test.any() and len(np.unique(y[tv])) > 1:
+            acc, cm = test_score(Xa, y, is_test, classes, kind)
+            row["test_balanced_accuracy"] = round(acc, 3)
+            confusion[label] = cm
+
+        rows.append(row)
+
+    table = pd.DataFrame(rows)
+    table.attrs["chance"] = 1 / len(classes)
+    return table, confusion
+
+
+def baselines_figure(table: pd.DataFrame, confusion: dict, path: Path):
+    """Figure of section 6: balanced accuracy of the baselines (cross-validation mean ± SD and
+    the test set) and the test confusion matrix of the best baseline by cross-validation."""
+    use_style()
+    fig, (a, b) = plt.subplots(1, 2, figsize=(16, 2.6 + 0.8 * len(table)), gridspec_kw={"width_ratios": [1.3, 1]})
+
+    y = np.arange(len(table))
+    cv = 100 * table.cv_balanced_accuracy.to_numpy()
+    sd = 100 * table.cv_sd.fillna(0).to_numpy()
+    a.errorbar(cv, y - 0.12, xerr=sd, fmt="o", color=CLASS_COLOURS[0], capsize=3, label="cross-validation (mean ± SD)")
+
+    if "test_balanced_accuracy" in table:
+        test = 100 * table.test_balanced_accuracy.to_numpy()
+        a.plot(test, y + 0.12, "D", color=CLASS_COLOURS[1], label="test set (once)")
+        for yi, v in zip(y, test):
+            a.text(v + 1, yi + 0.12, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
+
+    for yi, v, e in zip(y, cv, sd):
+        a.text(v + e + 1, yi - 0.12, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
+
+    chance = 100 * table.attrs.get("chance", 0)
+    a.axvline(chance, color=MUTED, linestyle=":", linewidth=0.8)
+    a.text(chance + 0.5, len(table) - 0.45, "chance", fontsize=8, color=MUTED)
+    a.set_yticks(y, table.baseline)
+    a.invert_yaxis()
+    a.set_xlim(max(0, chance - 10), 100)
+    a.set_xlabel("balanced accuracy (%)")
+    a.set_title("Baselines on hand-made features", loc="left")
+    a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2)
+    a.grid(axis="y", visible=False)
+
+    best = table.loc[table.cv_balanced_accuracy.idxmax(), "baseline"]
+    if best in confusion:
+        cm = confusion[best]
+        b.imshow(cm.to_numpy(), cmap="Blues", vmin=0, vmax=100)
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                v = cm.iat[i, j]
+                b.text(j, i, f"{v:.0f}", ha="center", va="center", color="white" if v >= 60 else TEXT)
+        b.set_xticks(range(cm.shape[1]), [short_class(c, 16) for c in cm.columns], rotation=20, ha="right")
+        b.set_yticks(range(cm.shape[0]), [short_class(c, 16) for c in cm.index])
+        b.set_xlabel("predicted")
+        b.set_ylabel("true")
+        b.grid(False)
+        b.tick_params(length=0)
+        b.set_title(f"Test set, {best}:\n% of each true class", loc="left")
+    else:
+        b.set_visible(False)
+
+    fig.suptitle("Cross-validated over the folds; test: fitted on all training / validation particles, evaluated once",
+                 x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def read_crop(root: Path, r) -> tuple[np.ndarray, np.ndarray]:
+    """RGB crop and boolean mask of one dataset row."""
+    from PIL import Image
+
+    rgb = np.asarray(Image.open(Path(root) / r.crop))[..., :3]
+    mask = np.asarray(Image.open(Path(root) / r.mask)) > 0
+    return rgb, mask
+
+
+def crop_tile(ax, root: Path, r, outline: str):
+    """One crop with the outline of its mask (thin line) and no axes."""
+    rgb, mask = read_crop(root, r)
+    ax.imshow(rgb, interpolation="nearest")
+
+    if mask.any():
+        ax.contour(mask.astype(float), levels=[0.5], colors=[outline], linewidths=0.6)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(False)
+
+
+def gallery_figure(ds: pd.DataFrame, root: Path, rows: pd.DataFrame, title: str, path: Path, cols: int = 8):
+    """Crops of one group in a grid (sorted by SEM ECD), each with its mask outline and a
+    caption: SEM id, SEM / VHX ECD."""
+    use_style()
+    colours = class_colours(class_order(ds))
+    nrow = int(np.ceil(len(rows) / cols))
+    fig, axes = plt.subplots(nrow, cols, figsize=(1.9 * cols, 2.15 * nrow + 0.4), squeeze=False)
+
+    for ax in axes.flat:
+        ax.axis("off")
+
+    for ax, r in zip(axes.flat, rows.itertuples()):
+        ax.axis("on")
+        crop_tile(ax, root, r, colours[r.training_class])
+        ax.set_title(f"#{r.sem_id}\nSEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm", fontsize=7)
+
+    um = float(rows.crop_size_px.iloc[0] * rows.um_per_px.iloc[0])
+    fig.suptitle(f"{title}  (tile {um:.1f} µm wide; line = mask)", x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def galleries(ds: pd.DataFrame, root: Path, out: Path) -> list[Path]:
+    """One gallery per origin group (training class + AZtec class, all groups): GALLERY_N
+    random crops (seed 0), or all if fewer."""
+    import re
+
+    groups = origin_groups(ds)
+    files = []
+
+    for k, g in enumerate(sorted(groups.unique()), start=1):
+        rows = ds[groups == g]
+        rows = rows.sample(min(GALLERY_N, len(rows)), random_state=0).sort_values("sem_ecd_um")
+
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", g).strip("_")
+        path = out / f"6_gallery_{k:02d}_{slug}.png"
+        gallery_figure(ds, root, rows, f"{g}: {len(rows)} of {int((groups == g).sum())} particles (random)", path)
+        files.append(path)
+
+    return files
+
+
+def flagged_particles(ds: pd.DataFrame, out: Path) -> tuple[pd.DataFrame, str]:
+    """Training / validation particles the cross-validated model of section 4 confidently
+    disagrees with (predicts another class, own class probability < MODEL_DISAGREES), sorted
+    by origin group and own class probability."""
+    X, note = model_features(ds, out)
+    pred = model_predictions(ds, X)
+    flags = label_flags(ds)
+
+    d = ds.loc[pred.index].join(pred).join(flags)
+    d["origin"] = origin_groups(ds)
+    d = d[(d.predicted != d.training_class) & (d.p_own < MODEL_DISAGREES)]
+    d["match_warnings"] = d[list(FLAGS)].apply(lambda r: ", ".join(k.removeprefix("flag_") for k in FLAGS if r[k]), axis=1)
+
+    return d.sort_values(["origin", "p_own"]), note
+
+
+def bse_lookup(ds: pd.DataFrame, root: Path, bse_dir: Path | None, matches: Path | None, log=print):
+    """BSE images per SEM field and SEM bounding boxes per particle, for the BSE tiles; None
+    if no BSE folder is given. matches.csv from --matches or dataset_info.json."""
+    import json
+    from .matching_figures import bse_paths
+
+    if bse_dir is None:
+        return None
+
+    if matches is None:
+        info = Path(root) / "dataset_info.json"
+        matches = Path(json.loads(info.read_text())["matches"]) if info.exists() else None
+
+    if matches is None or not Path(matches).exists():
+        log(f"matches.csv not found ({matches}) - BSE tiles skipped; give it with --matches")
+        return None
+
+    cols = ["sem_id", "bb_left_px", "bb_top_px", "bb_width_px", "bb_height_px"]
+    boxes = pd.read_csv(matches, usecols=cols).drop_duplicates("sem_id").set_index("sem_id")
+
+    return {"images": bse_paths(Path(bse_dir)), "boxes": boxes}
+
+
+def load_bse_raw(path) -> np.ndarray:
+    """BSE image as float, not stretched (the tiles are stretched locally)."""
+    import tifffile
+
+    a = tifffile.imread(path).astype(np.float32)
+    return a[..., 0] if a.ndim == 3 else a
+
+
+def bse_tile(ax, bse: dict, cache, r, width_um: float):
+    """BSE image of the particle's SEM field around its bounding box (same width in µm as the
+    VHX crop), stretched between the 0.5 and 99.5 % percentiles of the tile (so the inside of
+    the particle stays visible), with the SEM bounding box; outside the field white; a note if
+    the image is missing."""
+    from matplotlib.patches import Rectangle
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(False)
+
+    if r.field not in bse["images"] or r.sem_id not in bse["boxes"].index:
+        ax.text(0.5, 0.5, "no BSE image", ha="center", va="center", fontsize=7, color=MUTED, transform=ax.transAxes)
+        return
+
+    b = bse["boxes"].loc[r.sem_id]
+    img = cache.get(bse["images"][r.field])
+    h, w = img.shape
+
+    half = width_um / 2 / SEM_UM_PER_PX
+    x0 = int(round(b.bb_left_px + b.bb_width_px / 2 - half))
+    y0 = int(round(b.bb_top_px + b.bb_height_px / 2 - half))
+    n = int(round(2 * half)) + 1
+
+    tile = np.full((n, n), np.nan, np.float32)
+    xs, ys = max(0, x0), max(0, y0)
+    xe, ye = min(w, x0 + n), min(h, y0 + n)
+    if xe > xs and ye > ys:
+        tile[ys - y0:ye - y0, xs - x0:xe - x0] = img[ys:ye, xs:xe]
+
+    lo, hi = np.nanpercentile(tile, [0.5, 99.5]) if np.isfinite(tile).any() else (0, 1)
+    cmap = plt.get_cmap("gray").with_extremes(bad="white")
+    ax.imshow((tile - lo) / max(hi - lo, 1e-6), cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
+    ax.add_patch(Rectangle((b.bb_left_px - x0 - 0.5, b.bb_top_px - y0 - 0.5), b.bb_width_px, b.bb_height_px,
+                           fill=False, ec="#e8590c", lw=0.7))
+
+
+def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path, bse: dict | None) -> list[Path]:
+    """Pages of the model-flagged particles: per particle the VHX crop with its mask outline
+    and, with BSE images, the BSE crop of the same width next to it. Numbered [page-tile] as in
+    6_flagged_review.xlsx."""
+    from .matching_figures import ImageCache
+
+    use_style()
+    colours = class_colours(class_order(ds))
+    cache = ImageCache(load_bse_raw) if bse else None
+    per_row = 4 if bse else 6
+    files = []
+
+    for p0 in range(0, len(flagged), FLAGGED_PER_PAGE):
+        page = flagged.iloc[p0:p0 + FLAGGED_PER_PAGE]
+        page_no = p0 // FLAGGED_PER_PAGE + 1
+        nrow = int(np.ceil(len(page) / per_row))
+        ncol = per_row * (2 if bse else 1)
+        fig, axes = plt.subplots(nrow, ncol, figsize=(1.95 * ncol, 2.45 * nrow + 0.5), squeeze=False)
+
+        for ax in axes.flat:
+            ax.axis("off")
+
+        for k, r in enumerate(page.itertuples()):
+            row, col = divmod(k, per_row)
+            av = axes[row, col * (2 if bse else 1)]
+            av.axis("on")
+            crop_tile(av, root, r, colours[r.training_class])
+
+            typ = r.Type if isinstance(r.Type, str) else r.class_label
+            caption = (f"[{page_no}-{k + 1}] #{r.sem_id} {typ}\n"
+                       f"{short_class(r.training_class)} → {short_class(r.predicted)} (p {r.p_own:.2f})\n"
+                       f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm")
+            av.set_title(caption, fontsize=6)
+
+            if bse:
+                ab = axes[row, col * 2 + 1]
+                ab.axis("on")
+                bse_tile(ab, bse, cache, r, float(r.crop_size_px * r.um_per_px))
+                ab.set_title(f"BSE, field {r.field}\n{r.match_warnings or 'no match warning'}", fontsize=6)
+
+        um = float(page.crop_size_px.iloc[0] * page.um_per_px.iloc[0])
+        what = "VHX crop with mask | BSE with SEM box" if bse else "VHX crop with mask"
+        fig.suptitle(f"Model-flagged particles, page {page_no}: label → prediction (probability of the label); "
+                     f"{what}; {um:.1f} µm wide", x=0.01, ha="left", color=MUTED, fontsize=9)
+        fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
+
+        path = out / f"6_flagged_{page_no:02d}.png"
+        fig.savefig(path, dpi=140)
+        plt.close(fig)
+        files.append(path)
+
+    return files
+
+
+def flagged_review(flagged: pd.DataFrame, out: Path) -> Path:
+    """6_flagged_review.xlsx: one row per model-flagged particle with its tile number, label,
+    prediction, sizes, match warnings and key elements, plus empty 'verdict' and 'note'
+    columns. Verdicts already entered for the same SEM particles are kept."""
+    path = out / "6_flagged_review.xlsx"
+    wt = [c for c in ["O_wt", "N_wt", "S_wt", "Al_wt", "Ca_wt", "Mg_wt", "Si_wt", "Ti_wt", "Fe_wt"] if c in flagged]
+
+    d = flagged.copy()
+    d["page"] = np.arange(len(d)) // FLAGGED_PER_PAGE + 1
+    d["tile"] = np.arange(len(d)) % FLAGGED_PER_PAGE + 1
+    cols = ["page", "tile", "sem_id", "field", "vhx_image", "crop", "training_class", "class_label", "Type",
+            "predicted", "p_own", "sem_ecd_um", "vhx_ecd_um", "match_type", "match_warnings"] + wt
+    d = d[cols].copy()
+    d["verdict"] = ""
+    d["note"] = ""
+
+    if path.exists():
+        old = pd.read_excel(path, sheet_name="review").set_index("sem_id")
+        for c in ["verdict", "note"]:
+            if c in old:
+                kept = d.sem_id.map(old[c]).fillna("")
+                d[c] = kept.where(kept != "", d[c])
+
+    with pd.ExcelWriter(path) as xw:
+        d.to_excel(xw, sheet_name="review", index=False)
+        pd.DataFrame({"verdict": VERDICTS}).to_excel(xw, sheet_name="verdicts", index=False)
+
+    return path
+
+
+def section_baselines(ds: pd.DataFrame, out: Path, log=print, bse: Path | None = None,
+                      matches: Path | None = None) -> dict:
+    """Section 6: writes 6_baselines.xlsx and 6_baselines.png; if the crops are present also
+    the galleries (6_gallery_*.png), the pages of model-flagged particles (6_flagged_*.png,
+    with BSE crops if a BSE folder is given) and 6_flagged_review.xlsx."""
+    X, note = model_features(ds, out)
+    table, confusion = final_baselines(ds, X, note)
+
+    with pd.ExcelWriter(out / "6_baselines.xlsx") as xw:
+        table.to_excel(xw, sheet_name="baselines", index=False)
+
+        if confusion:
+            cms = pd.concat(confusion, names=["baseline", "true"])
+            cms.to_excel(xw, sheet_name="test_confusion_pct")
+
+    baselines_figure(table, confusion, out / "6_baselines.png")
+
+    log("6. Baselines and visual check")
+    log(table.drop(columns=["features"]).to_string(index=False))
+
+    root = out.parent
+    if not (root / ds.crop.iloc[0]).exists():
+        log("crops not found - galleries and model-flagged pages skipped")
+        return {"baselines": table, "confusion": confusion}
+
+    gal = galleries(ds, root, out)
+    flagged, _ = flagged_particles(ds, out)
+    lookup = bse_lookup(ds, root, bse, matches, log)
+    pages = flagged_pages(flagged, ds, root, out, lookup)
+    review = flagged_review(flagged, out)
+
+    log(f"galleries: {len(gal)} origin groups; model-flagged particles: {len(flagged)} on {len(pages)} page(s)"
+        f"{' with BSE' if lookup else ''}; review sheet {review.name}")
+
+    return {"baselines": table, "confusion": confusion, "galleries": gal, "flagged": flagged, "pages": pages}
