@@ -1594,6 +1594,7 @@ def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
 
 GALLERY_N = 24                  # crops per origin group in the galleries (random, seed 0)
 FLAGGED_PER_PAGE = 24           # model-flagged particles per page
+FLAGGED_FONT = 13               # caption size on the flagged pages (pt)
 SEM_UM_PER_PX = 0.294864        # BSE pixel size of the AZtec fields (as in cii.matching_figures)
 VERDICTS = ["label correct (model wrong)", "label wrong", "wrong particle (match)", "mask wrong", "unclear"]
 
@@ -1611,14 +1612,16 @@ def short_class(name: str) -> str:
 
 
 def tile_grid(nrow: int, ncol: int, tile_in: float, caption_lines: int, fontsize: float,
-              gap_in: float = 0.15, header_in: float = 0.45):
+              gap_in: float = 0.15, header_in: float = 0.45, group: int = 1, group_gap_in: float = 0.0):
     """Figure with nrow x ncol square tiles of tile_in inches and room for a caption of
     caption_lines lines above each tile (fixed spacing in inches, so captions never run into
-    the row above). Returns the figure and the axes array (all switched off)."""
+    the row above). Tiles can be grouped (e.g. group=2 for VHX | BSE pairs) with an extra gap
+    of group_gap_in between groups. Returns the figure and the axes array (all switched off)."""
     caption_in = caption_lines * fontsize * 1.3 / 72 + 0.06
     cell_w = tile_in + gap_in
     cell_h = tile_in + caption_in + gap_in
-    width = ncol * cell_w + gap_in
+    margin = gap_in + group_gap_in / 2                 # left and right, so wide captions are not cut
+    width = 2 * margin + ncol * cell_w - gap_in + (ncol - 1) // group * group_gap_in
     height = header_in + nrow * cell_h
 
     fig = plt.figure(figsize=(width, height))
@@ -1626,7 +1629,7 @@ def tile_grid(nrow: int, ncol: int, tile_in: float, caption_lines: int, fontsize
 
     for i in range(nrow):
         for j in range(ncol):
-            left = gap_in + j * cell_w
+            left = margin + j * cell_w + j // group * group_gap_in
             bottom = height - header_in - i * cell_h - caption_in - tile_in
             ax = fig.add_axes([left / width, bottom / height, tile_in / width, tile_in / height])
             ax.axis("off")
@@ -1894,31 +1897,40 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
         page_no = p0 // FLAGGED_PER_PAGE + 1
         nrow = int(np.ceil(len(page) / per_row))
         ncol = per_row * (2 if bse else 1)
-        fig, axes = tile_grid(nrow, ncol, tile_in=2.2, caption_lines=4, fontsize=8.5)
+        per = 2 if bse else 1
+        fig, axes = tile_grid(nrow, ncol, tile_in=2.3 if bse else 3.3, caption_lines=4, fontsize=FLAGGED_FONT,
+                              header_in=0.55, group=per, group_gap_in=0.35 if bse else 0.6)
 
         for k, r in enumerate(page.itertuples()):
             row, col = divmod(k, per_row)
-            av = axes[row, col * (2 if bse else 1)]
+            av = axes[row, col * per]
             av.axis("on")
             crop_tile(av, root, r, colours[r.training_class])
 
-            typ = r.Type if isinstance(r.Type, str) else r.class_label
-            caption = (f"[{page_no}-{k + 1}] #{r.sem_id} {typ}\n"
-                       f"{short_class(r.training_class)} → {short_class(r.predicted)}\n"
-                       f"p(label) {r.p_own:.2f} · p(predicted) {r.p_predicted:.2f}\n"
-                       f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm")
-            av.set_title(caption, fontsize=8.5, pad=3)
-
             if bse:
-                ab = axes[row, col * 2 + 1]
+                ab = axes[row, col * per + 1]
                 ab.axis("on")
                 bse_tile(ab, bse, cache, r, float(r.crop_size_px * r.um_per_px))
-                ab.set_title(f"BSE, field {r.field}\n{r.match_warnings or 'no match warning'}", fontsize=8.5, pad=3)
+
+            # one caption across the particle's tiles (VHX | BSE), so the text can be large
+            typ = r.Type if isinstance(r.Type, str) else r.class_label
+            where = f" · BSE field {r.field}" if bse else ""
+            caption = (f"[{page_no}-{k + 1}] #{r.sem_id} {typ}{where}\n"
+                       f"{short_class(r.training_class)} → {short_class(r.predicted)}\n"
+                       f"p(label) {r.p_own:.2f} · p(predicted) {r.p_predicted:.2f}\n"
+                       f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm · {r.match_warnings or 'no match warning'}")
+
+            left = av.get_position().x0
+            right = axes[row, col * per + per - 1].get_position().x1
+            top = av.get_position().y1 + 0.04 / fig.get_figheight()
+            fig.text((left + right) / 2, top, caption, ha="center", va="bottom", fontsize=FLAGGED_FONT,
+                     linespacing=1.2)
 
         um = float(page.crop_size_px.iloc[0] * page.um_per_px.iloc[0])
         what = "VHX crop with mask | BSE with SEM box" if bse else "VHX crop with mask"
         tile_header(fig, f"Model-flagged particles, page {page_no}: label → predicted class; p = out-of-fold "
-                         f"model probability of the label and of the predicted class; {what}; {um:.1f} µm wide")
+                         f"model probability of the label and of the predicted class; {what}; {um:.1f} µm wide",
+                    fontsize=13)
 
         path = out / f"6_flagged_{page_no:02d}.png"
         save_figure(fig, path, dpi=140)
