@@ -10,6 +10,10 @@ Built section by section; each section writes its tables and figures into
    ratio, particles longer than the crop, and a size-only baseline: how well
    the class can be predicted from the VHX size alone (a shortcut a model
    could learn instead of the appearance).
+3. Optical appearance: VHX contrast, contrast per colour channel, pinkness
+   (green / red contrast) and particle colour per class, a colour-only baseline,
+   and from the crops the background brightness and overexposure per class
+   (a class recorded in brighter areas would be a confounder).
 """
 from __future__ import annotations
 
@@ -201,8 +205,8 @@ def section_composition(ds: pd.DataFrame, out: Path, log=print) -> dict:
 SIZE_BINS = [0, 1.5, 2, 3, 5, 10, np.inf]
 
 
-def size_groups(ds: pd.DataFrame) -> pd.Series:
-    """Group per particle for the size comparison: the training class, split into
+def source_groups(ds: pd.DataFrame) -> pd.Series:
+    """Group per particle for the comparisons: the training class, split into
     '<class> (<source>)' where a class is fed by more than one source (Type table and rules)."""
     multi = ds.groupby("training_class").class_source.nunique() > 1
     split_it = ds.training_class.map(multi)
@@ -214,7 +218,7 @@ def size_groups(ds: pd.DataFrame) -> pd.Series:
 def size_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Tables of section 2: size quantiles per class and group, counts per SEM ECD class,
     particles longer than the crop."""
-    d = ds.assign(group=size_groups(ds), size_ratio=ds.vhx_ecd_um / ds.sem_ecd_um)
+    d = ds.assign(group=source_groups(ds), size_ratio=ds.vhx_ecd_um / ds.sem_ecd_um)
     q = [0.05, 0.25, 0.5, 0.75, 0.95]
 
     rows = []
@@ -286,7 +290,7 @@ def size_figure(ds: pd.DataFrame, base: dict, path: Path):
     use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
-    groups = size_groups(ds)
+    groups = source_groups(ds)
 
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), gridspec_kw={"width_ratios": [1, 1, 0.85]})
 
@@ -372,3 +376,242 @@ def section_size(ds: pd.DataFrame, out: Path, log=print) -> dict:
     log(base_vhx["confusion_pct"].to_string())
 
     return {"tables": t, "baseline_vhx": base_vhx, "baseline_sem": base_sem}
+
+
+# ---------------------------------------------------------------------------
+# 3. Optical appearance
+# ---------------------------------------------------------------------------
+
+APPEARANCE = {                                   # column -> axis label
+    "vhx_contrast_max": "contrast (darkest point)",
+    "pinkness": "pinkness (green / red contrast)",
+    "vhx_contrast_R_max": "red contrast",
+    "vhx_contrast_G_max": "green contrast",
+    "vhx_contrast_B_max": "blue contrast",
+}
+PINK_THRESHOLD = 1.3                             # green / red contrast above this: pink (Ti(C,N)-like)
+
+
+def add_pinkness(ds: pd.DataFrame) -> pd.DataFrame:
+    """Copy of ds with 'pinkness' = green contrast / red contrast of the particle (> 1: darker
+    in green than in red, i.e. pink / violet)."""
+    return ds.assign(pinkness=ds.vhx_contrast_G_max / ds.vhx_contrast_R_max.clip(lower=1e-3))
+
+
+def appearance_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Tables of section 3: quantiles of contrast, channel contrasts, pinkness and particle
+    colour per class and source group; share of pink particles per group."""
+    d = add_pinkness(ds).assign(group=source_groups(ds))
+    q = [0.05, 0.25, 0.5, 0.75, 0.95]
+    cols = list(APPEARANCE) + ["vhx_mean_R", "vhx_mean_G", "vhx_mean_B"]
+
+    rows = []
+    for key in ["training_class", "group"]:
+        for name, g in d.groupby(key):
+            if key == "group" and name in set(d.training_class):
+                continue                                  # unsplit classes are already listed
+            row = {"group": name, "n": len(g), "pink_pct": round(100 * float((g.pinkness >= PINK_THRESHOLD).mean()), 1)}
+            for c in cols:
+                for qi, val in zip(q, g[c].quantile(q)):
+                    row[f"{c}_p{int(qi * 100)}"] = round(float(val), 3)
+            rows.append(row)
+
+    return {"quantiles": pd.DataFrame(rows).set_index("group")}
+
+
+def colour_baseline(ds: pd.DataFrame) -> dict:
+    """Colour-only baseline: logistic regression on contrast, channel contrasts, log pinkness
+    and particle colour (no size), standardised, class weights balanced, cross-validated
+    over the folds. Returns balanced accuracy per fold and the row-normalised confusion."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score, confusion_matrix
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    d = add_pinkness(ds)
+    tv = d[d.split == "trainval"]
+    feats = ["vhx_contrast_max", "vhx_contrast_R_max", "vhx_contrast_G_max", "vhx_contrast_B_max",
+             "vhx_mean_R", "vhx_mean_G", "vhx_mean_B"]
+    X = np.c_[tv[feats].fillna(0).to_numpy(), np.log(tv.pinkness.clip(lower=0.05).to_numpy())]
+    y = tv.training_class.to_numpy()
+    classes = class_order(ds)
+
+    pred = np.empty(len(tv), dtype=object)
+    scores = []
+    for k in sorted(tv.fold.unique()):
+        val = (tv.fold == k).to_numpy()
+        model = make_pipeline(StandardScaler(), LogisticRegression(class_weight="balanced", max_iter=2000))
+        model.fit(X[~val], y[~val])
+        pred[val] = model.predict(X[val])
+        scores.append(balanced_accuracy_score(y[val], pred[val]))
+
+    cm = pd.DataFrame(confusion_matrix(y, pred, labels=classes), index=classes, columns=classes)
+    cm_pct = (100 * cm.div(cm.sum(axis=1), axis=0)).round(1)
+    cm_pct.index.name, cm_pct.columns.name = "true", "predicted"
+
+    return {"balanced_accuracy_per_fold": np.round(scores, 3), "balanced_accuracy": float(np.mean(scores)),
+            "chance": 1 / len(classes), "confusion_pct": cm_pct}
+
+
+def crop_exposure(ds: pd.DataFrame, root: Path) -> pd.DataFrame | None:
+    """Per crop (if the crops are present): background brightness (median grey of the pixels
+    outside the particle mask, 0-255) and share of saturated pixels (255 in R, G and B).
+    None if the crop files are missing."""
+    from PIL import Image
+
+    first = root / ds.crop.iloc[0]
+    if not first.exists():
+        return None
+
+    rows = []
+    for r in ds.itertuples():
+        rgb = np.asarray(Image.open(root / r.crop))[..., :3]
+        mask = np.asarray(Image.open(root / r.mask)) > 0 if (root / r.mask).exists() else np.zeros(rgb.shape[:2], bool)
+        grey = rgb.mean(axis=2)
+
+        rows.append({"background_grey": float(np.median(grey[~mask])) if (~mask).any() else np.nan,
+                     "saturated_pct": 100 * float((rgb == 255).all(axis=2).mean())})
+
+    return pd.DataFrame(rows, index=ds.index)
+
+
+def _boxes(ax, data: list, labels: list, colours: list, hatches: list, xlabel: str, title: str):
+    """Horizontal box plot (box = quartiles, whiskers = 5-95 %) with one box per group;
+    hatched boxes mark groups that come from a rule."""
+    bp = ax.boxplot(data, vert=False, whis=(5, 95), showfliers=False, widths=0.55, patch_artist=True,
+                    medianprops={"color": TEXT, "linewidth": 1.5})
+
+    for patch, col, h in zip(bp["boxes"], colours, hatches):
+        patch.set_facecolor(col)
+        patch.set_edgecolor("white")
+        patch.set_hatch(h)
+
+    ax.set_yticks(range(1, len(labels) + 1), labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_title(title, loc="left")
+    ax.grid(axis="y", visible=False)
+
+
+def appearance_figure(ds: pd.DataFrame, base: dict, path: Path):
+    """Figure of section 3: contrast and pinkness per class / source group (box plots) and
+    pinkness against contrast for every particle (scatter, coloured by class)."""
+    use_style()
+    d = add_pinkness(ds)
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    groups = source_groups(ds)
+    names = sorted(groups.unique())
+    group_class = [d.training_class[groups == n].iloc[0] for n in names]
+    group_colour = [colours[c] for c in group_class]
+    group_hatch = ["//" if "(rule" in n else "" for n in names]
+    labels = [f"{n}\n(n={int((groups == n).sum())})" for n in names]
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.6), gridspec_kw={"width_ratios": [1, 1, 1.15]})
+
+    # box plots: contrast and pinkness per group
+    _boxes(axes[0], [d.loc[groups == n, "vhx_contrast_max"].to_numpy() for n in names], labels,
+           group_colour, group_hatch, APPEARANCE["vhx_contrast_max"], "Contrast per class")
+    _boxes(axes[1], [d.loc[groups == n, "pinkness"].to_numpy() for n in names], labels,
+           group_colour, group_hatch, APPEARANCE["pinkness"], "Pinkness per class")
+    axes[1].axvline(PINK_THRESHOLD, color=MUTED, linewidth=0.8, linestyle=":")
+    axes[1].set_yticklabels([])
+
+    p95 = [float(d.loc[groups == n, "pinkness"].quantile(0.95)) for n in names]
+    for k, n in enumerate(names):
+        pct = 100 * float((d.loc[groups == n, "pinkness"] >= PINK_THRESHOLD).mean())
+        axes[1].text(p95[k] + 0.04, k + 1, f"{pct:.0f} % pink", va="center", color=MUTED)
+    axes[1].set_xlim(right=max(p95) + 0.6)                     # room for the labels right of the whiskers
+
+    # scatter: pinkness against contrast, every particle
+    ax = axes[2]
+    order = np.random.default_rng(0).permutation(len(d))       # random drawing order: no class hides the others
+    sub = d.iloc[order]
+    ax.scatter(sub.vhx_contrast_max, sub.pinkness, s=9, c=[colours[c] for c in sub.training_class],
+               alpha=0.55, linewidths=0)
+
+    for c in classes:                                          # legend entries with full opacity
+        ax.scatter([], [], s=30, color=colours[c], label=c)
+
+    ax.axhline(PINK_THRESHOLD, color=MUTED, linewidth=0.8, linestyle=":")
+    ax.set_yscale("log")
+    ax.set_yticks([0.5, 0.7, 1, 1.3, 2, 3], ["0.5", "0.7", "1", "1.3", "2", "3"])
+    ax.minorticks_off()
+    ax.set_ylim(0.4, 4)
+    ax.set_xlim(0, min(1, float(d.vhx_contrast_max.quantile(0.995)) * 1.05))
+    ax.set_xlabel(APPEARANCE["vhx_contrast_max"])
+    ax.set_ylabel(APPEARANCE["pinkness"])
+    ax.set_title("Pinkness against contrast (every particle)", loc="left")
+    ax.legend(loc="upper right")
+
+    fig.suptitle(f"Colour-only baseline (contrast + colour, no size, cross-validated): balanced accuracy "
+                 f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
+                 x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def exposure_figure(ds: pd.DataFrame, exp: pd.DataFrame, path: Path):
+    """Figure of section 3: background brightness (left) and share of saturated pixels (right)
+    of the crops per class."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    labels = [f"{c}\n(n={int((ds.training_class == c).sum())})" for c in classes]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
+    _boxes(axes[0], [exp.loc[ds.training_class == c, "background_grey"].dropna().to_numpy() for c in classes],
+           labels, [colours[c] for c in classes], [""] * len(classes),
+           "background grey level of the crop (0-255)", "Background brightness per class")
+    _boxes(axes[1], [exp.loc[ds.training_class == c, "saturated_pct"].to_numpy() for c in classes],
+           labels, [colours[c] for c in classes], [""] * len(classes),
+           "saturated pixels in the crop (%)", "Overexposure per class")
+    axes[1].set_yticklabels([])
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
+    """Section 3: writes 3_appearance.xlsx, 3_appearance.png and, if the crops are present,
+    3_exposure.png; prints medians, pink shares, the colour-only baseline and the exposure."""
+    t = appearance_tables(ds)
+    base = colour_baseline(ds)
+    exp = crop_exposure(ds, out.parent)
+
+    summary = pd.DataFrame({"balanced_accuracy": [round(base["balanced_accuracy"], 3)],
+                            "per_fold": [", ".join(map(str, base["balanced_accuracy_per_fold"]))],
+                            "chance": [round(base["chance"], 3)]})
+    with pd.ExcelWriter(out / "3_appearance.xlsx") as xw:
+        t["quantiles"].to_excel(xw, sheet_name="quantiles")
+        summary.to_excel(xw, sheet_name="colour_baseline", index=False)
+        base["confusion_pct"].to_excel(xw, sheet_name="colour_baseline_confusion")
+
+        if exp is not None:
+            e = exp.assign(training_class=ds.training_class)
+            exp_q = e.groupby("training_class")[["background_grey", "saturated_pct"]].quantile([0.25, 0.5, 0.75]).unstack()
+            exp_q.columns = [f"{c}_p{int(qq * 100)}" for c, qq in exp_q.columns]
+            exp_q.round(2).to_excel(xw, sheet_name="exposure")
+
+    appearance_figure(ds, base, out / "3_appearance.png")
+
+    q = t["quantiles"]
+    log("3. Optical appearance")
+    log(q[["n", "pink_pct", "vhx_contrast_max_p25", "vhx_contrast_max_p50", "vhx_contrast_max_p75",
+           "pinkness_p50"]].to_string())
+    log(f"colour-only baseline (balanced accuracy, chance {100 * base['chance']:.0f} %): "
+        f"{100 * base['balanced_accuracy']:.0f} %  (folds: {', '.join(f'{100 * v:.0f}' for v in base['balanced_accuracy_per_fold'])})")
+    log("confusion of the colour baseline (% of each true class):")
+    log(base["confusion_pct"].to_string())
+
+    if exp is None:
+        log("crops not found - background brightness and overexposure skipped")
+    else:
+        exposure_figure(ds, exp, out / "3_exposure.png")
+        e = exp.assign(training_class=ds.training_class).groupby("training_class").median().round(1)
+        log("crops, median per class: background grey level and saturated pixels (%)")
+        log(e.to_string())
+
+    return {"tables": t, "baseline": base, "exposure": exp}

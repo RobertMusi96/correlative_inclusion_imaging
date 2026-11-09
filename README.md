@@ -262,6 +262,11 @@ section by section; `--sections 1,2` runs a selection):
    VHX / SEM size ratio, particles longer than the crop, size-only baseline
    (logistic regression on the VHX ECD over the folds: how much of the class a
    model could guess from size alone) (`2_size.xlsx`, `2_size.png`).
+3. Optical appearance: contrast, contrast per colour channel, pinkness (green /
+   red contrast, > 1.3 = pink) and particle colour per class and source,
+   colour-only baseline (no size); from the crops: background brightness and
+   saturated pixels per class (`3_appearance.xlsx`, `3_appearance.png`,
+   `3_exposure.png`).
 
 ```bash
 python scripts/dataset_report.py data/datasets/dataset_v1
