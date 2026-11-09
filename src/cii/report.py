@@ -1596,6 +1596,7 @@ GALLERY_N = 24                  # crops per origin group in the galleries (rando
 FLAGGED_PER_PAGE = 24           # model-flagged particles per page
 FLAGGED_FONT = 13               # caption size on the flagged pages (pt)
 SEM_UM_PER_PX = 0.294864        # BSE pixel size of the AZtec fields (as in cii.matching_figures)
+BSE_BITS = 15                   # bit depth of the BSE data (AZtec writes 15-bit values into 16-bit TIFFs)
 VERDICTS = ["label correct (model wrong)", "label wrong", "wrong particle (match)", "mask wrong", "unclear"]
 
 
@@ -1835,22 +1836,27 @@ def bse_lookup(ds: pd.DataFrame, root: Path, bse_dir: Path | None, matches: Path
     return {"images": bse_paths(Path(bse_dir)), "boxes": boxes}
 
 
-def load_bse_raw(path) -> tuple[np.ndarray, float]:
-    """BSE image as float with its original grey values (no normalisation) and the largest
-    value of its data type (65535 for 16 bit, 255 for 8 bit), used as white."""
+def load_bse_8bit(path) -> np.ndarray:
+    """BSE image as 8-bit grey values, scaled linearly from BSE_BITS bit (AZtec: 15-bit data in
+    16-bit TIFFs): grey = value x 255 / (2^BSE_BITS - 1), the same for every image; no
+    normalisation. 8-bit images are used as they are."""
     import tifffile
 
     a = tifffile.imread(path)
-    white = float(np.iinfo(a.dtype).max) if a.dtype.kind in "ui" else float(np.nanmax(a))
-    a = a.astype(np.float32)
-    return (a[..., 0] if a.ndim == 3 else a), white
+    a = a[..., 0] if a.ndim == 3 else a
+
+    if a.dtype == np.uint8:
+        return a
+
+    grey = a.astype(np.float32) * 255 / (2 ** BSE_BITS - 1)
+    return np.clip(np.round(grey), 0, 255).astype(np.uint8)
 
 
 def bse_tile(ax, bse: dict, cache, r, width_um: float):
     """BSE image of the particle's SEM field around its bounding box (same width in µm as the
-    VHX crop) with its original grey values, not normalised: black = 0, white = largest value of
-    the data type, the same for every tile. SEM bounding box drawn; outside the field white; a
-    note if the image is missing."""
+    VHX crop) in 8-bit grey values (load_bse_8bit, not normalised: 0 = black, 255 = white for
+    every tile). SEM bounding box drawn; outside the field white; a note if the image is
+    missing."""
     from matplotlib.patches import Rectangle
 
     ax.set_xticks([])
@@ -1862,7 +1868,7 @@ def bse_tile(ax, bse: dict, cache, r, width_um: float):
         return
 
     b = bse["boxes"].loc[r.sem_id]
-    img, white = cache.get(bse["images"][r.field])
+    img = cache.get(bse["images"][r.field])
     h, w = img.shape
 
     half = width_um / 2 / SEM_UM_PER_PX
@@ -1877,7 +1883,7 @@ def bse_tile(ax, bse: dict, cache, r, width_um: float):
         tile[ys - y0:ye - y0, xs - x0:xe - x0] = img[ys:ye, xs:xe]
 
     cmap = plt.get_cmap("gray").with_extremes(bad="white")
-    ax.imshow(tile, cmap=cmap, vmin=0, vmax=white, interpolation="nearest")
+    ax.imshow(tile, cmap=cmap, vmin=0, vmax=255, interpolation="nearest")
     ax.add_patch(Rectangle((b.bb_left_px - x0 - 0.5, b.bb_top_px - y0 - 0.5), b.bb_width_px, b.bb_height_px,
                            fill=False, ec="#e8590c", lw=0.7))
 
@@ -1890,7 +1896,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
 
     use_style()
     colours = class_colours(class_order(ds))
-    cache = ImageCache(load_bse_raw) if bse else None
+    cache = ImageCache(load_bse_8bit) if bse else None
     per_row = 4 if bse else 6
     files = []
 
