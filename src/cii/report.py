@@ -1658,8 +1658,8 @@ def baselines_figure(table: pd.DataFrame, confusion: dict, path: Path):
         a.text(v + e + 1, yi, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
 
     chance = 100 * table.attrs.get("chance", 0)
-    a.axvline(chance, color=MUTED, linestyle=":", linewidth=0.8)
-    a.text(chance + 0.5, len(table) - 0.45, "chance", fontsize=8, color=MUTED)
+    a.axvline(chance, color=MUTED, linestyle=":", linewidth=0.8, label=f"chance level ({chance:.0f} %)")
+    a.legend(loc="upper right")
     a.set_yticks(y, table.baseline)
     a.invert_yaxis()
     a.set_xlim(max(0, chance - 10), 100)
