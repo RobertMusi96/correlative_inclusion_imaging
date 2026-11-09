@@ -897,6 +897,13 @@ FLAGS = {                       # column -> description; any of them = match unc
 }
 
 
+def shown_groups(counts: pd.Series) -> list[str]:
+    """Origin groups for the figures: those with at least MIN_GROUP particles (all of them if
+    none is that large, e.g. in small test datasets)."""
+    big = counts[counts >= MIN_GROUP]
+    return sorted((big if len(big) else counts).index)
+
+
 def origin_groups(ds: pd.DataFrame) -> pd.Series:
     """Group per particle: '<training class> (<AZtec class>)', e.g. 'Artifact (rejected)'."""
     return ds.training_class + " (" + ds.class_label.fillna("?").astype(str) + ")"
@@ -1111,7 +1118,7 @@ def label_quality_figure(ds: pd.DataFrame, match: pd.DataFrame, chem: dict, path
     # right: Fe per origin group
     groups = origin_groups(ds)
     counts = groups.value_counts()
-    names = sorted(counts[counts >= MIN_GROUP].index)
+    names = shown_groups(counts)
     data = [ds.Fe_wt[groups == n].dropna().to_numpy() for n in names]
     group_class = [ds.training_class[groups == n].iloc[0] for n in names]
     hatch = ["//" if (ds.class_source[groups == n] != "type table").any() else "" for n in names]
@@ -1130,7 +1137,7 @@ def chemistry_figure(chem: dict, path: Path):
     per origin group (groups with at least MIN_GROUP particles)."""
     use_style()
     share = chem["present_pct"]
-    share = share[share.n >= MIN_GROUP]
+    share = share.loc[shown_groups(share.n)]
     values = share.drop(columns="n")
 
     fig, ax = plt.subplots(figsize=(1.0 + 0.62 * values.shape[1] + 3.5, 0.9 + 0.45 * len(values)))
@@ -1162,7 +1169,7 @@ def model_origin_figure(ds: pd.DataFrame, tables: dict, note: str, path: Path):
     classes = class_order(ds)
     colours = class_colours(classes)
     t = tables["by_origin"]
-    t = t[t.n >= MIN_GROUP]
+    t = t.loc[shown_groups(t.n)]
 
     fig, ax = plt.subplots(figsize=(13, 0.9 + 0.5 * len(t)))
     y = np.arange(len(t))
