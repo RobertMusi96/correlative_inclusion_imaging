@@ -258,6 +258,10 @@ section by section; `--sections 1,2` runs a selection):
 1. Composition and balance: class counts overall and per test set / fold, class
    shares per part, origin (AZtec class -> training class, Type table or rule),
    class weights (`1_composition.xlsx`, `1_composition.png`, `1_origin.png`).
+2. Size: SEM and VHX ECD per class (classes fed by a rule also split by source),
+   VHX / SEM size ratio, particles longer than the crop, size-only baseline
+   (logistic regression on the VHX ECD over the folds: how much of the class a
+   model could guess from size alone) (`2_size.xlsx`, `2_size.png`).
 
 ```bash
 python scripts/dataset_report.py data/datasets/dataset_v1

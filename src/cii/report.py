@@ -6,6 +6,10 @@ Built section by section; each section writes its tables and figures into
 1. Composition and balance: class counts overall and per split / fold, origin
    of the training classes (original AZtec class, Type table or rule), class
    weights for the imbalance.
+2. Size: SEM and VHX ECD per class (and per class source), VHX / SEM size
+   ratio, particles longer than the crop, and a size-only baseline: how well
+   the class can be predicted from the VHX size alone (a shortcut a model
+   could learn instead of the appearance).
 """
 from __future__ import annotations
 
@@ -186,3 +190,178 @@ def section_composition(ds: pd.DataFrame, out: Path, log=print) -> dict:
     log("class weights (trainval, inverse frequency): "
         + ", ".join(f"{c} {w:.2f}" for c, w in t["weights"].weight.items()))
     return t
+
+
+# ---------------------------------------------------------------------------
+# 2. Size
+# ---------------------------------------------------------------------------
+
+SIZE_BINS = [0, 1.5, 2, 3, 5, 10, np.inf]
+
+
+def size_groups(ds: pd.DataFrame) -> pd.Series:
+    """Group per particle for the size comparison: the training class, split into
+    '<class> (<source>)' where a class is fed by more than one source (Type table and rules)."""
+    multi = ds.groupby("training_class").class_source.nunique() > 1
+    split_it = ds.training_class.map(multi)
+
+    return pd.Series(np.where(split_it, ds.training_class + " (" + ds.class_source + ")", ds.training_class),
+                     index=ds.index)
+
+
+def size_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Tables of section 2: size quantiles per class and group, counts per SEM ECD class,
+    particles longer than the crop."""
+    d = ds.assign(group=size_groups(ds), size_ratio=ds.vhx_ecd_um / ds.sem_ecd_um)
+    q = [0.05, 0.25, 0.5, 0.75, 0.95]
+
+    rows = []
+    for key, col in [("training_class", "training_class"), ("group", "group")]:
+        for name, g in d.groupby(col):
+            if key == "group" and name in set(d.training_class):
+                continue                                  # unsplit classes are already listed
+            row = {"group": name, "n": len(g)}
+            for v in ["sem_ecd_um", "vhx_ecd_um", "size_ratio", "sem_length_um", "sem_aspect_ratio"]:
+                for qi, val in zip(q, g[v].quantile(q)):
+                    row[f"{v}_p{int(qi * 100)}"] = round(float(val), 2)
+            rows.append(row)
+    quantiles = pd.DataFrame(rows).set_index("group")
+
+    labels = [f"{lo:g}-{hi:g}" if np.isfinite(hi) else f">{lo:g}" for lo, hi in zip(SIZE_BINS[:-1], SIZE_BINS[1:])]
+    sem_bin = pd.cut(d.sem_ecd_um, SIZE_BINS, labels=labels, right=False)
+    per_bin = pd.crosstab(d.training_class, sem_bin).reindex(columns=labels, fill_value=0)
+    per_bin.columns.name = None
+
+    crop_um = d.crop_size_px * d.um_per_px
+    longer = d[d.sem_length_um >= crop_um]
+    too_long = longer.groupby("training_class").size().reindex(class_order(ds), fill_value=0).rename("n_longer_than_crop")
+
+    return {"quantiles": quantiles, "per_sem_ecd_class": per_bin, "longer_than_crop": too_long.to_frame(),
+            "longer_than_crop_list": longer[["crop", "training_class", "sem_ecd_um", "sem_length_um"]]}
+
+
+def size_baseline(ds: pd.DataFrame, feature: str = "vhx_ecd_um") -> dict:
+    """Size-only baseline: logistic regression on log(size) and its square, class weights
+    balanced, cross-validated over the folds (train on four, predict the fifth). Returns the
+    balanced accuracy per fold and the row-normalised confusion matrix; chance level is
+    1 / number of classes."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score, confusion_matrix
+
+    tv = ds[ds.split == "trainval"]
+    x = np.log(tv[feature].clip(lower=0.1).to_numpy())
+    X = np.c_[x, x ** 2]
+    y = tv.training_class.to_numpy()
+    classes = class_order(ds)
+
+    pred = np.empty(len(tv), dtype=object)
+    scores = []
+    for k in sorted(tv.fold.unique()):
+        val = (tv.fold == k).to_numpy()
+        model = LogisticRegression(class_weight="balanced", max_iter=1000)
+        model.fit(X[~val], y[~val])
+        pred[val] = model.predict(X[val])
+        scores.append(balanced_accuracy_score(y[val], pred[val]))
+
+    cm = pd.DataFrame(confusion_matrix(y, pred, labels=classes), index=classes, columns=classes)
+    cm_pct = (100 * cm.div(cm.sum(axis=1), axis=0)).round(1)
+    cm_pct.index.name, cm_pct.columns.name = "true", "predicted"
+
+    return {"feature": feature, "balanced_accuracy_per_fold": np.round(scores, 3),
+            "balanced_accuracy": float(np.mean(scores)), "chance": 1 / len(classes), "confusion_pct": cm_pct}
+
+
+def _ecdf(ax, values, colour, label, dashed=False):
+    """Cumulative distribution of values as a step line (share of particles below a size)."""
+    v = np.sort(values)
+    y = np.arange(1, len(v) + 1) / len(v) * 100
+    ax.step(v, y, where="post", color=colour, linewidth=2, linestyle="--" if dashed else "-", label=label)
+
+
+def size_figure(ds: pd.DataFrame, base: dict, path: Path):
+    """Figure of section 2: cumulative SEM ECD (left) and VHX ECD (middle) per class / group,
+    VHX / SEM size ratio per class (right, box = quartiles, whiskers = 5-95 %)."""
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    groups = size_groups(ds)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.3), gridspec_kw={"width_ratios": [1, 1, 0.8]})
+    fig.patch.set_facecolor(SURFACE)
+
+    # left / middle: cumulative size distributions, one line per group (class colour, rule groups dashed)
+    for ax, col, title in [(axes[0], "sem_ecd_um", "SEM ECD"), (axes[1], "vhx_ecd_um", "VHX ECD")]:
+        for name in sorted(groups.unique()):
+            sel = groups == name
+            cls = ds.training_class[sel].iloc[0]
+            dashed = "(rule" in name
+            _ecdf(ax, ds.loc[sel, col].to_numpy(), colours[cls], f"{name}  (n={int(sel.sum())})", dashed)
+        ax.set_xscale("log")
+        ax.set_xticks([1, 1.5, 2, 3, 5, 10, 20], ["1", "1.5", "2", "3", "5", "10", "20"])
+        ax.set_xlim(0.7, 25)
+        ax.set_ylim(0, 100)
+        ax.set_xlabel(f"{title} (µm)", fontsize=8, color=TEXT_2)
+        ax.set_ylabel("particles smaller than this (%)", fontsize=8, color=TEXT_2)
+        ax.set_title(f"{title} per class", fontsize=10, color=TEXT, loc="left")
+        ax.grid(color=GRID, linewidth=0.6)
+        _style(ax)
+    axes[0].legend(fontsize=7, frameon=False, loc="lower right", labelcolor=TEXT)
+
+    # right: size ratio VHX / SEM per class
+    ax = axes[2]
+    ratio = ds.vhx_ecd_um / ds.sem_ecd_um
+    data = [ratio[ds.training_class == c].to_numpy() for c in classes]
+    bp = ax.boxplot(data, vert=False, whis=(5, 95), showfliers=False, widths=0.5, patch_artist=True,
+                    medianprops={"color": TEXT, "linewidth": 1.5})
+    for patch, c in zip(bp["boxes"], classes):
+        patch.set_facecolor(colours[c])
+        patch.set_edgecolor(SURFACE)
+    for k, d in enumerate(data):
+        ax.text(np.percentile(d, 95) + 0.05, k + 1, f"median {np.median(d):.2f}", va="center", fontsize=7, color=TEXT_2)
+    ax.axvline(1, color=TEXT_2, linewidth=0.8, linestyle=":")
+    ax.set_yticks(range(1, len(classes) + 1), classes, fontsize=8, color=TEXT)
+    ax.invert_yaxis()
+    ax.set_xlabel("VHX ECD / SEM ECD", fontsize=8, color=TEXT_2)
+    ax.set_title("Size in the light microscope vs SEM", fontsize=10, color=TEXT, loc="left")
+    ax.grid(axis="x", color=GRID, linewidth=0.6)
+    _style(ax)
+
+    fig.suptitle(f"Size-only baseline (VHX ECD, cross-validated): balanced accuracy "
+                 f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
+                 fontsize=9, color=TEXT_2, x=0.01, ha="left")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def section_size(ds: pd.DataFrame, out: Path, log=print) -> dict:
+    """Section 2: writes 2_size.xlsx and 2_size.png and prints the size medians, the
+    particles longer than the crop and the size-only baseline."""
+    t = size_tables(ds)
+    base_vhx = size_baseline(ds, "vhx_ecd_um")
+    base_sem = size_baseline(ds, "sem_ecd_um")
+
+    summary = pd.DataFrame({
+        "feature": [b["feature"] for b in (base_vhx, base_sem)],
+        "balanced_accuracy": [round(b["balanced_accuracy"], 3) for b in (base_vhx, base_sem)],
+        "per_fold": [", ".join(map(str, b["balanced_accuracy_per_fold"])) for b in (base_vhx, base_sem)],
+        "chance": [round(base_vhx["chance"], 3)] * 2,
+    })
+    with pd.ExcelWriter(out / "2_size.xlsx") as xw:
+        for name, tab in t.items():
+            tab.to_excel(xw, sheet_name=name[:31])
+        summary.to_excel(xw, sheet_name="baseline", index=False)
+        base_vhx["confusion_pct"].to_excel(xw, sheet_name="baseline_confusion_vhx")
+    size_figure(ds, base_vhx, out / "2_size.png")
+
+    q = t["quantiles"]
+    log("2. Size")
+    log(q[["n", "sem_ecd_um_p25", "sem_ecd_um_p50", "sem_ecd_um_p75", "vhx_ecd_um_p50", "size_ratio_p50"]].to_string())
+    log("particles per SEM ECD class (um):")
+    log(t["per_sem_ecd_class"].to_string())
+    log(f"longer than the crop: {int(t['longer_than_crop'].n_longer_than_crop.sum())} particles")
+    log(f"size-only baseline (balanced accuracy, chance {100 * base_vhx['chance']:.0f} %): "
+        f"VHX ECD {100 * base_vhx['balanced_accuracy']:.0f} %, SEM ECD {100 * base_sem['balanced_accuracy']:.0f} %")
+    log("confusion of the VHX size baseline (% of each true class):")
+    log(base_vhx["confusion_pct"].to_string())
+
+    return {"tables": t, "baseline_vhx": base_vhx, "baseline_sem": base_sem}

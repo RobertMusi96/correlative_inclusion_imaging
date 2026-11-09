@@ -4,6 +4,7 @@ Reads dataset_vN/dataset.csv and writes tables and figures into dataset_vN/repor
 one file group per section (prefix = section number):
 
     1  composition and balance: 1_composition.xlsx, 1_composition.png, 1_origin.png
+    2  size: 2_size.xlsx, 2_size.png (size per class, VHX/SEM ratio, size-only baseline)
 
 Example:
     python scripts/dataset_report.py data/datasets/dataset_v1
@@ -15,9 +16,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from cii.report import section_composition
+from cii.report import section_composition, section_size
 
-SECTIONS = {1: section_composition}
+SECTIONS = {1: section_composition, 2: section_size}
 
 
 def main():
