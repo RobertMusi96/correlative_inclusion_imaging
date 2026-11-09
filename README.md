@@ -309,8 +309,7 @@ training / validation particles only.
    `--matches`), with `6_flagged_review.xlsx` for verdicts (kept on reruns).
 
 ```bash
-python scripts/dataset_report.py data/datasets/dataset_v1
-python scripts/dataset_report.py data/datasets/dataset_v1 --sections 6 --bse "D:\SEM\MnB\images"
+uv run python scripts/dataset_report.py data/datasets/dataset_v1 --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images"
 ```
 
 ## Results so far
