@@ -256,7 +256,10 @@ the VHX image are left out, because only part of them was recorded (reported as
 ### `scripts/dataset_report.py`
 
 Statistical overview of a dataset folder, written to `dataset_vN/report/` (built
-section by section; `--sections 1,2` runs a selection):
+section by section; `--sections 1,2` runs a selection). The test set is held out:
+section 1 counts its particles per class (balance of the split) and section 5 uses
+the positions of its blocks; all other statistics, baselines and figures use the
+training / validation particles only.
 
 1. Composition and balance: class counts overall and per test set / fold, class
    shares per part, origin (AZtec class -> training class, Type table or rule),
@@ -287,18 +290,18 @@ section by section; `--sections 1,2` runs a selection):
    `4_suspicious.csv`: particles with a match warning or where the model
    confidently disagrees with the label, for review (`4_label_quality.xlsx`,
    `4_label_quality.png`, `4_chemistry.png`, `4_model_by_origin.png`).
-5. Spatial distribution and split: particle map with the split blocks (test
-   blocks shaded), spatial clustering of the classes (share of particles whose
+5. Spatial distribution and split: map of the training / validation particles
+   with the split blocks (test blocks shaded, their particles not shown), spatial
+   clustering of the classes (share of particles whose
    nearest neighbour has the same class against the share expected without
    clustering; chi-square test and Cramér's V of classes against blocks),
    distance of the test particles to the nearest training / validation particle,
    position-only baseline (logistic regression on x, y, x², y², xy), and medians
-   and Kolmogorov-Smirnov tests of VHX ECD, contrast and pinkness between test
-   set and folds (`5_spatial.xlsx`, `5_map.png`, `5_split.png`).
+   and Kolmogorov-Smirnov tests of VHX ECD, contrast and pinkness between the
+   folds (`5_spatial.xlsx`, `5_map.png`, `5_split.png`).
 6. Baselines and visual check: logistic regression on size only, colour only and
    all features, gradient boosting on all features; cross-validated over the
-   folds and, fitted on all training / validation particles, evaluated once on
-   the test set (`6_baselines.xlsx`, `6_baselines.png`). From the crops: a
+   folds, the test set is not used (`6_baselines.xlsx`, `6_baselines.png`). From the crops: a
    gallery per origin group (24 random crops with mask outline,
    `6_gallery_*.png`) and pages of the particles the model confidently disagrees
    with (`6_flagged_*.png`; with `--bse <folder>` next to the BSE image of the

@@ -174,6 +174,8 @@ def toy_full(tmp_path, n=400, seed=4):
     bx = np.floor(ds.vhx_x_um / 1000).astype(int)
     by = np.floor(ds.vhx_y_um / 1000).astype(int)
     ds["block"] = by * (bx.max() + 1) + bx
+    ds["split"] = np.where(ds.block.isin([1, 6]), "test", "trainval")     # whole blocks, as in the export
+    ds["fold"] = np.where(ds.split == "test", -1, ds.block % 5)
 
     (tmp_path / "crops").mkdir()
     (tmp_path / "masks").mkdir()
@@ -200,7 +202,8 @@ def test_spatial_section(tmp_path):
     ds, out = toy_full(tmp_path)
 
     blocks = block_grid(ds, 1000.0)
-    assert blocks.n.sum() == len(ds)
+    assert blocks.n.sum() == (ds.split == "trainval").sum()             # test classes not counted
+    assert (blocks.loc[blocks.part == "test", "n"] == 0).all()
     assert ((blocks.x0_um % 1000) == 0).all() or np.isclose(blocks.x0_um - ds.vhx_x_um.min(), (blocks.bx * 1000)).all()
 
     r = section_spatial(ds, out, log=lambda *a: None)

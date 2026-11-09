@@ -27,8 +27,8 @@ Built section by section; each section writes its tables and figures into
    the test set to the training data, a position-only baseline, and how alike
    the test set and the folds are (medians, Kolmogorov-Smirnov tests).
 6. Baselines and visual check: logistic regression on size only, colour only and
-   all features, and gradient boosting on all features, cross-validated and
-   evaluated once on the test set; crop galleries per origin group; pages of the
+   all features, and gradient boosting on all features, cross-validated over the
+   folds; crop galleries per origin group; pages of the
    particles the model confidently disagrees with (VHX crop, optionally next to
    the BSE image) and a review sheet for them.
 """
@@ -72,6 +72,42 @@ def part_label(ds: pd.DataFrame) -> pd.Series:
 def use_style():
     """Applies the project's matplotlib style (cii.plot_style) with the class colours as cycle."""
     setup_matplotlib_parameter(CLASS_COLOURS)
+
+
+def capitalise(text: str) -> str:
+    """Text with its first letter in upper case (the rest unchanged, e.g. 'µm' or 'VHX')."""
+    for i, ch in enumerate(text):
+        if ch.isalpha():
+            return text[:i] + ch.upper() + text[i + 1:]
+    return text
+
+
+def save_figure(fig, path: Path, **kwargs):
+    """Saves a figure after capitalising the first letter of every axis label, text tick label
+    (categories, not numbers), title, legend entry and figure title."""
+    fig.canvas.draw()                                  # tick labels exist only after drawing
+
+    for ax in fig.axes:
+        for axis in (ax.xaxis, ax.yaxis):
+            axis.label.set_text(capitalise(axis.label.get_text()))
+
+            texts = [t.get_text() for t in axis.get_ticklabels()]
+            is_text = any(any(ch.isalpha() for ch in t) and not t.startswith("$") for t in texts)
+            if is_text and len(texts) == len(axis.get_ticklocs()):
+                axis.set_ticks(axis.get_ticklocs(), [capitalise(t) for t in texts])
+
+        for loc in ("left", "center", "right"):
+            ax.set_title(capitalise(ax.get_title(loc=loc)), loc=loc)
+
+        legend = ax.get_legend()
+        if legend is not None:
+            for t in legend.get_texts():
+                t.set_text(capitalise(t.get_text()))
+
+    if fig._suptitle is not None:
+        fig._suptitle.set_text(capitalise(fig._suptitle.get_text()))
+
+    fig.savefig(path, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +195,7 @@ def composition_figure(ds: pd.DataFrame, t: dict, path: Path):
     b.set_axisbelow(True)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -188,7 +224,7 @@ def origin_figure(t: dict, path: Path):
     ax.tick_params(length=0)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -357,7 +393,7 @@ def size_figure(ds: pd.DataFrame, base: dict, path: Path):
                  f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -566,7 +602,7 @@ def appearance_figure(ds: pd.DataFrame, base: dict, path: Path):
                  f"{100 * base['balanced_accuracy']:.0f} %  (chance {100 * base['chance']:.0f} %)",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -588,7 +624,7 @@ def exposure_figure(ds: pd.DataFrame, exp: pd.DataFrame, path: Path):
     axes[1].set_yticklabels([])
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -780,7 +816,7 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
                  "cross-validated over the folds, test set not used. Feature ranking: each feature alone (AUC).",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -812,7 +848,7 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
                  "the logistic regression baselines on all features are in 3_crop_features.png",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 1 - 0.3 / fig.get_figheight()))
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -1167,7 +1203,7 @@ def label_quality_figure(ds: pd.DataFrame, match: pd.DataFrame, chem: dict, path
            "Matrix share of the spectrum per origin (high = weak particle signal)")
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -1197,7 +1233,7 @@ def chemistry_figure(chem: dict, path: Path):
     fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="%")
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -1234,7 +1270,7 @@ def model_origin_figure(ds: pd.DataFrame, tables: dict, note: str, path: Path):
     ax.grid(axis="y", visible=False)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -1303,17 +1339,21 @@ def block_size_um(root: Path, default: float = 1000.0) -> float:
 
 
 def block_grid(ds: pd.DataFrame, block_um: float) -> pd.DataFrame:
-    """One row per block: its lower-left corner (stage µm, as in cii.dataset.spatial_groups),
-    part ('test' or 'fold k'), number of particles and the class counts."""
+    """One row per block: its lower-left corner (stage µm, as in cii.dataset.spatial_groups;
+    needs all particles, test set included, for the same origin), part ('test' or 'fold k'),
+    and the number of particles and class counts of the training / validation particles (0
+    for test blocks: the test set's classes are not looked at)."""
     bx = np.floor((ds.vhx_x_um - ds.vhx_x_um.min()) / block_um).astype(int)
     by = np.floor((ds.vhx_y_um - ds.vhx_y_um.min()) / block_um).astype(int)
 
-    d = pd.DataFrame({"block": ds.block, "bx": bx, "by": by, "part": part_label(ds), "cls": ds.training_class})
-    grid = d.groupby("block").agg(bx=("bx", "first"), by=("by", "first"), part=("part", "first"), n=("cls", "size"))
+    d = pd.DataFrame({"block": ds.block, "bx": bx, "by": by, "part": part_label(ds)})
+    grid = d.groupby("block").agg(bx=("bx", "first"), by=("by", "first"), part=("part", "first"))
     grid["x0_um"] = ds.vhx_x_um.min() + grid.bx * block_um
     grid["y0_um"] = ds.vhx_y_um.min() + grid.by * block_um
 
-    counts = pd.crosstab(d.block, d.cls).reindex(columns=class_order(ds), fill_value=0)
+    tv = ds[ds.split == "trainval"]
+    counts = pd.crosstab(tv.block, tv.training_class).reindex(index=grid.index, columns=class_order(tv), fill_value=0)
+    grid["n"] = counts.sum(axis=1)
     return grid.join(counts)
 
 
@@ -1327,27 +1367,20 @@ def part_medians(ds: pd.DataFrame) -> pd.DataFrame:
 
 
 def part_ks(ds: pd.DataFrame) -> pd.DataFrame:
-    """Two-sample Kolmogorov-Smirnov test per class and feature: test set against
-    training / validation, and each fold against the other folds (the fold with the largest D
-    and its p-value, not corrected for picking the largest of k). D = largest distance between
-    the two cumulative distributions."""
+    """Two-sample Kolmogorov-Smirnov test per class and feature, each fold against the other
+    folds (the fold with the largest D and its p-value, not corrected for picking the largest
+    of k). D = largest distance between the two cumulative distributions. Training /
+    validation particles only."""
     from scipy.stats import ks_2samp
 
-    d = add_pinkness(ds)
+    d = add_pinkness(ds[ds.split == "trainval"])
     rows = []
 
-    for c in class_order(ds):
-        dc = d[d.training_class == c]
-        tv = dc[dc.split == "trainval"]
+    for c in class_order(d):
+        tv = d[d.training_class == c]
 
         for f, label in SPLIT_FEATURES.items():
             row = {"training_class": c, "feature": label}
-
-            test = dc.loc[dc.split == "test", f].dropna()
-            if len(test) >= 5:
-                r = ks_2samp(test, tv[f].dropna())
-                row.update({"test_vs_trainval_D": round(r.statistic, 3), "test_vs_trainval_p": round(r.pvalue, 4)})
-
             worst = None
             for k in sorted(tv.fold.unique()):
                 a = tv.loc[tv.fold == k, f].dropna()
@@ -1429,8 +1462,9 @@ def position_baseline(ds: pd.DataFrame) -> dict:
 
 
 def map_figure(ds: pd.DataFrame, blocks: pd.DataFrame, block_um: float, path: Path):
-    """Figure of section 5: every particle at its stage position, coloured by class, on the
-    grid of split blocks; test blocks shaded, each block labelled T (test) or its fold number."""
+    """Figure of section 5: every training / validation particle at its stage position,
+    coloured by class, on the grid of split blocks; test blocks shaded (their particles not
+    shown), each block labelled T (test) or its fold number."""
     from matplotlib.patches import Rectangle
 
     use_style()
@@ -1458,23 +1492,23 @@ def map_figure(ds: pd.DataFrame, blocks: pd.DataFrame, block_um: float, path: Pa
     ax.set_xlabel("stage x (mm)")
     ax.set_ylabel("stage y (mm)")
     ax.grid(False)
-    ax.set_title(f"Particles by class; {block_um / 1000:g} mm blocks of the split (grey, T = test set; "
-                 f"number = cross-validation fold)", loc="left")
+    ax.set_title(f"Training / validation particles by class; {block_um / 1000:g} mm blocks of the split "
+                 f"(number = cross-validation fold; grey T = test set, not shown)", loc="left")
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), markerscale=3)
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
 def split_figure(ds: pd.DataFrame, ks: pd.DataFrame, path: Path):
-    """Figure of section 5: median and quartiles of VHX ECD, contrast and pinkness per part of
-    the split (test set and folds) and class: the parts should look alike."""
+    """Figure of section 5: median and quartiles of VHX ECD, contrast and pinkness per fold and
+    class: the folds should look alike."""
     use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
     d = add_pinkness(ds).assign(part=part_label(ds))
-    parts = ["test"] + sorted(p for p in d.part.unique() if p != "test")
+    parts = sorted(d.part.unique())
 
     fig, axes = plt.subplots(1, len(SPLIT_FEATURES), figsize=(17, 1.6 + 0.55 * len(parts)), sharey=True)
     off = 0.6 / max(len(classes) - 1, 1)
@@ -1495,25 +1529,29 @@ def split_figure(ds: pd.DataFrame, ks: pd.DataFrame, path: Path):
         ax.set_xlabel(label)
         ax.grid(axis="y", visible=False)
 
-    axes[0].set_title("Median (dot) and quartiles (line) per part of the split", loc="left")
+    axes[0].set_title("Median (dot) and quartiles (line) per cross-validation fold", loc="left")
     axes[-1].legend(loc="upper left", bbox_to_anchor=(1.01, 1))
 
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
 def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
     """Section 5: writes 5_spatial.xlsx, 5_map.png and 5_split.png; prints the spatial
     clustering, the distance of the test set to the training data, the position-only
-    baseline and the largest differences between the parts of the split."""
+    baseline and the largest differences between the folds. Needs the whole dataset, but uses
+    the test set only for the positions of its blocks and particles (map, distance); all
+    statistics on classes and features use the training / validation particles."""
     block_um = block_size_um(out.parent)
     blocks = block_grid(ds, block_um)
-    medians = part_medians(ds)
-    ks = part_ks(ds)
-    clus = spatial_clustering(ds, blocks)
-    dist = test_distance(ds)
-    pos = position_baseline(ds)
+    dist = test_distance(ds)                         # positions only
+
+    tv = ds[ds.split == "trainval"]                  # everything else: training / validation particles
+    medians = part_medians(tv)
+    ks = part_ks(tv)
+    clus = spatial_clustering(tv, blocks[blocks.part != "test"])
+    pos = position_baseline(tv)
 
     with pd.ExcelWriter(out / "5_spatial.xlsx") as xw:
         clus["nearest_neighbour"].to_excel(xw, sheet_name="nearest_neighbour")
@@ -1524,8 +1562,8 @@ def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
         medians.to_excel(xw, sheet_name="medians_per_part")
         blocks.drop(columns=["bx", "by"]).to_excel(xw, sheet_name="blocks")
 
-    map_figure(ds, blocks, block_um, out / "5_map.png")
-    split_figure(ds, ks, out / "5_split.png")
+    map_figure(tv, blocks, block_um, out / "5_map.png")
+    split_figure(tv, ks, out / "5_split.png")
 
     b = clus["blocks"]
     log("5. Spatial distribution and split")
@@ -1538,7 +1576,7 @@ def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
             f"min {dist['min_um']} µm")
     log(f"position-only baseline (logistic regression on x, y, x², y², xy): balanced accuracy "
         f"{100 * pos['balanced_accuracy']:.0f} % (chance {100 * pos['chance']:.0f} %)")
-    log("largest KS distances between parts of the split:")
+    log("largest KS distance of a fold against the other folds:")
     log(ks.to_string(index=False))
 
     return {"blocks": blocks, "medians": medians, "ks": ks, "clustering": clus, "test_distance": dist,
@@ -1546,8 +1584,8 @@ def section_spatial(ds: pd.DataFrame, out: Path, log=print) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 6. Baselines and visual check: final tabular baselines (cross-validation and the
-#    held-out test set), crop galleries per origin group, and the particles the model
+# 6. Baselines and visual check: final tabular baselines (cross-validation over the
+#    folds; the test set is not used), crop galleries per origin group, and the particles the model
 #    confidently disagrees with, next to their BSE image for review
 
 GALLERY_N = 24                  # crops per origin group in the galleries (random, seed 0)
@@ -1570,52 +1608,35 @@ def baseline_sets(ds: pd.DataFrame, X: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {"size only": size, "colour only": colour_columns(ds), "all features": X}
 
 
-def test_score(X: np.ndarray, y: np.ndarray, is_test: np.ndarray, classes: list, kind: str) -> tuple[float, pd.DataFrame]:
-    """Fits the model on all training / validation particles and evaluates it once on the
-    test set: balanced accuracy and confusion matrix (% of each true class)."""
-    from sklearn.metrics import balanced_accuracy_score
-
-    model = make_model(kind)
-    model.fit(X[~is_test], y[~is_test])
-    pred = model.predict(X[is_test])
-
-    cm = pd.crosstab(pd.Series(y[is_test], name="true"), pd.Series(pred, name="predicted"), normalize="index")
-    cm = (100 * cm.reindex(index=classes, columns=classes, fill_value=0)).round(1)
-
-    return float(balanced_accuracy_score(y[is_test], pred)), cm
-
-
 def final_baselines(ds: pd.DataFrame, X: pd.DataFrame, note: str) -> tuple[pd.DataFrame, dict]:
     """Baselines for later models: logistic regression on size only, colour only and all
-    features, and gradient-boosted trees on all features. Cross-validated over the folds
-    (mean, SD, per fold) and, fitted on all training / validation particles, evaluated once
-    on the test set. Returns the table and the test confusion matrices."""
+    features, and gradient-boosted trees on all features, cross-validated over the folds
+    (training / validation particles only; the test set is not used). Returns the table (mean,
+    SD and per fold of the balanced accuracy) and the out-of-fold confusion matrices (% of
+    each true class)."""
     classes = class_order(ds)
     tv = (ds.split == "trainval").to_numpy()
-    y = ds.training_class.to_numpy()
-    is_test = ~tv
+    y = ds.training_class.to_numpy()[tv]
+    folds = ds.fold.to_numpy()[tv]
 
-    runs = [(name, "logistic") for name in baseline_sets(ds, X)] + [("all features", "boosting")]
     sets = baseline_sets(ds, X)
+    runs = [(name, "logistic") for name in sets] + [("all features", "boosting")]
     rows, confusion = [], {}
 
     for name, kind in runs:
-        Xa = sets[name].to_numpy(dtype=float)
-        scores, _ = cv_balanced_accuracy(Xa[tv], y[tv], ds.fold.to_numpy()[tv], classes, kind)
+        Xa = sets[name].to_numpy(dtype=float)[tv]
+        scores, pred = cv_balanced_accuracy(Xa, y, folds, classes, kind)
         model_name = "logistic regression" if kind == "logistic" else "gradient boosting"
         label = f"{name} ({model_name})"
 
-        row = {"baseline": label, "features": note if name == "all features" else name,
-               "n_features": Xa.shape[1], "cv_balanced_accuracy": round(float(scores.mean()), 3),
-               "cv_sd": round(float(scores.std(ddof=1)), 3) if len(scores) > 1 else np.nan,
-               "cv_per_fold": ", ".join(map(str, scores))}
+        rows.append({"baseline": label, "features": note if name == "all features" else name,
+                     "n_features": Xa.shape[1], "cv_balanced_accuracy": round(float(scores.mean()), 3),
+                     "cv_sd": round(float(scores.std(ddof=1)), 3) if len(scores) > 1 else np.nan,
+                     "cv_per_fold": ", ".join(map(str, scores))})
 
-        if is_test.any() and len(np.unique(y[tv])) > 1:
-            acc, cm = test_score(Xa, y, is_test, classes, kind)
-            row["test_balanced_accuracy"] = round(acc, 3)
-            confusion[label] = cm
-
-        rows.append(row)
+        done = pd.notna(pred)
+        cm = pd.crosstab(pd.Series(y[done], name="true"), pd.Series(pred[done], name="predicted"), normalize="index")
+        confusion[label] = (100 * cm.reindex(index=classes, columns=classes, fill_value=0)).round(1)
 
     table = pd.DataFrame(rows)
     table.attrs["chance"] = 1 / len(classes)
@@ -1623,24 +1644,18 @@ def final_baselines(ds: pd.DataFrame, X: pd.DataFrame, note: str) -> tuple[pd.Da
 
 
 def baselines_figure(table: pd.DataFrame, confusion: dict, path: Path):
-    """Figure of section 6: balanced accuracy of the baselines (cross-validation mean ± SD and
-    the test set) and the test confusion matrix of the best baseline by cross-validation."""
+    """Figure of section 6: balanced accuracy of the baselines (cross-validation, mean ± SD
+    over the folds) and the out-of-fold confusion matrix of the best baseline."""
     use_style()
     fig, (a, b) = plt.subplots(1, 2, figsize=(16, 2.6 + 0.8 * len(table)), gridspec_kw={"width_ratios": [1.3, 1]})
 
     y = np.arange(len(table))
     cv = 100 * table.cv_balanced_accuracy.to_numpy()
     sd = 100 * table.cv_sd.fillna(0).to_numpy()
-    a.errorbar(cv, y - 0.12, xerr=sd, fmt="o", color=CLASS_COLOURS[0], capsize=3, label="cross-validation (mean ± SD)")
-
-    if "test_balanced_accuracy" in table:
-        test = 100 * table.test_balanced_accuracy.to_numpy()
-        a.plot(test, y + 0.12, "D", color=CLASS_COLOURS[1], label="test set (once)")
-        for yi, v in zip(y, test):
-            a.text(v + 1, yi + 0.12, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
+    a.errorbar(cv, y, xerr=sd, fmt="o", color=CLASS_COLOURS[0], capsize=3)
 
     for yi, v, e in zip(y, cv, sd):
-        a.text(v + e + 1, yi - 0.12, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
+        a.text(v + e + 1, yi, f"{v:.0f}", va="center", fontsize=8, color=MUTED)
 
     chance = 100 * table.attrs.get("chance", 0)
     a.axvline(chance, color=MUTED, linestyle=":", linewidth=0.8)
@@ -1648,33 +1663,31 @@ def baselines_figure(table: pd.DataFrame, confusion: dict, path: Path):
     a.set_yticks(y, table.baseline)
     a.invert_yaxis()
     a.set_xlim(max(0, chance - 10), 100)
-    a.set_xlabel("balanced accuracy (%)")
+    a.set_xlabel("balanced accuracy (%), mean ± SD over the folds")
     a.set_title("Baselines on hand-made features", loc="left")
-    a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2)
     a.grid(axis="y", visible=False)
 
     best = table.loc[table.cv_balanced_accuracy.idxmax(), "baseline"]
-    if best in confusion:
-        cm = confusion[best]
-        b.imshow(cm.to_numpy(), cmap="Blues", vmin=0, vmax=100)
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                v = cm.iat[i, j]
-                b.text(j, i, f"{v:.0f}", ha="center", va="center", color="white" if v >= 60 else TEXT)
-        b.set_xticks(range(cm.shape[1]), [short_class(c, 16) for c in cm.columns], rotation=20, ha="right")
-        b.set_yticks(range(cm.shape[0]), [short_class(c, 16) for c in cm.index])
-        b.set_xlabel("predicted")
-        b.set_ylabel("true")
-        b.grid(False)
-        b.tick_params(length=0)
-        b.set_title(f"Test set, {best}:\n% of each true class", loc="left")
-    else:
-        b.set_visible(False)
+    cm = confusion[best]
+    b.imshow(cm.to_numpy(), cmap="Blues", vmin=0, vmax=100)
 
-    fig.suptitle("Cross-validated over the folds; test: fitted on all training / validation particles, evaluated once",
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            v = cm.iat[i, j]
+            b.text(j, i, f"{v:.0f}", ha="center", va="center", color="white" if v >= 60 else TEXT)
+
+    b.set_xticks(range(cm.shape[1]), [short_class(c, 16) for c in cm.columns], rotation=20, ha="right")
+    b.set_yticks(range(cm.shape[0]), [short_class(c, 16) for c in cm.index])
+    b.set_xlabel("predicted")
+    b.set_ylabel("true")
+    b.grid(False)
+    b.tick_params(length=0)
+    b.set_title(f"{best}, out-of-fold:\n% of each true class", loc="left")
+
+    fig.suptitle("Cross-validated over the folds (training / validation particles); test set not used",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150)
+    save_figure(fig, path, dpi=150)
     plt.close(fig)
 
 
@@ -1719,7 +1732,7 @@ def gallery_figure(ds: pd.DataFrame, root: Path, rows: pd.DataFrame, title: str,
     um = float(rows.crop_size_px.iloc[0] * rows.um_per_px.iloc[0])
     fig.suptitle(f"{title}  (tile {um:.1f} µm wide; line = mask)", x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
 
 
@@ -1874,7 +1887,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
         fig.tight_layout(rect=(0, 0, 1, 1 - 0.35 / fig.get_figheight()))
 
         path = out / f"6_flagged_{page_no:02d}.png"
-        fig.savefig(path, dpi=140)
+        save_figure(fig, path, dpi=140)
         plt.close(fig)
         files.append(path)
 
@@ -1922,9 +1935,8 @@ def section_baselines(ds: pd.DataFrame, out: Path, log=print, bse: Path | None =
     with pd.ExcelWriter(out / "6_baselines.xlsx") as xw:
         table.to_excel(xw, sheet_name="baselines", index=False)
 
-        if confusion:
-            cms = pd.concat(confusion, names=["baseline", "true"])
-            cms.to_excel(xw, sheet_name="test_confusion_pct")
+        cms = pd.concat(confusion, names=["baseline", "true"])
+        cms.to_excel(xw, sheet_name="cv_confusion_pct")
 
     baselines_figure(table, confusion, out / "6_baselines.png")
 
