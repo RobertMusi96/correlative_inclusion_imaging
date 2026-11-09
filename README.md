@@ -250,6 +250,19 @@ validation, the others training), `fold` -1 for test. The matched object is
 checked by position against objects.csv (ids of equally large objects may differ
 between detection runs; since version 0.3.0 equal areas are ordered by position).
 
+### `scripts/dataset_report.py`
+
+Statistical overview of a dataset folder, written to `dataset_vN/report/` (built
+section by section; `--sections 1,2` runs a selection):
+
+1. Composition and balance: class counts overall and per test set / fold, class
+   shares per part, origin (AZtec class -> training class, Type table or rule),
+   class weights (`1_composition.xlsx`, `1_composition.png`, `1_origin.png`).
+
+```bash
+python scripts/dataset_report.py data/datasets/dataset_v1
+```
+
 ## Results so far
 
 MnB sample (VHX 2 Nov 2026, SEM 30 Oct 2026), 4 indents, VHX -> SEM similarity:
