@@ -889,11 +889,34 @@ MIN_GROUP = 10                  # origin groups with fewer particles are left ou
 MODEL_DISAGREES = 0.2           # model probability of the own class below this: listed as suspicious
 MATRIX_ELEMENTS = ["Fe", "Mn"]  # come (also) from the steel matrix: reported as matrix share, not as particle chemistry
 
-FLAGS = {                       # column -> description; any of them = match uncertain
-    "flag_relaxed": "relaxed match (large particle, single candidate)",
-    "flag_candidates": "several VHX candidates within reach",
-    "flag_neighbour": "another SEM particle close by",
-    "flag_size": f"VHX / SEM size ratio outside {SIZE_MISMATCH[0]:g}-{SIZE_MISMATCH[1]:g}",
+FLAGS = {                       # column -> short label (figures); any of them = match uncertain
+    "flag_relaxed": "relaxed match (SEM ECD >= 2 µm, one object within 4.5 µm)",
+    "flag_candidates": ">= 2 distinct VHX objects within the match radius",
+    "flag_neighbour": "SEM neighbour: gap of equivalent circles < 1 µm",
+    "flag_size": f"VHX object ECD < {SIZE_MISMATCH[0]:g} or > {SIZE_MISMATCH[1]:g} x SEM ECD",
+}
+
+# exact definitions (definitions sheet); parameter values are the defaults of cii.matching.MatchParams
+FLAG_DEFINITIONS = {
+    "flag_relaxed": "match_type = 'relaxed': not found in the regular assignment; SEM ECD >= 2.0 µm; exactly one "
+                    "VHX object with ECD 0.6-1.7 x SEM ECD, not assigned to another SEM particle, has its centroid "
+                    "within 4.5 µm of the predicted position (n_candidates is then 1).",
+    "flag_candidates": "n_candidates > 1. Regular assignment: number of distinct VHX objects whose centroid lies "
+                       "within the match radius r of the predicted position, r = max(1.0 µm, 3 x residual SD of the "
+                       "position model, larger of x and y) + 0.2 x SEM length; views of one object in overlapping "
+                       "VHX images (positions relative to their predictions within 1.5 µm) count once. Region "
+                       "fallback (no object within r): number of VHX objects whose region box, enlarged by 0.5 µm "
+                       "per side, contains the predicted position and whose region is plausible (ECD 0.5-2.5 x SEM "
+                       "ECD, longer box side <= max(8 µm, 2.5 x SEM length), area / box area >= 0.25). The dataset "
+                       "holds only status 'matched': the second-best candidate scores >= 0.5 µm worse (score = "
+                       "distance + 1 µm x |ln(VHX ECD / SEM ECD)|).",
+    "flag_neighbour": "sem_neighbour: another SEM particle (same data set, not a duplicate or at the SEM field "
+                      "border) has its centre (stage coordinates) closer than (ECD_1 + ECD_2) / 2 + 1.0 µm, i.e. "
+                      "the gap between the two equivalent circles is < 1.0 µm.",
+    "flag_size": f"vhx_ecd_um / sem_ecd_um < {SIZE_MISMATCH[0]:g} or > {SIZE_MISMATCH[1]:g}; vhx_ecd_um is the "
+                 "ECD of the matched object (half-maximum outline), also for region matches. Ratios > 2 are "
+                 "already excluded from the dataset by the cluster rule 'vhx_larger' (object, or region for region "
+                 "matches, ECD > 2 x SEM ECD).",
 }
 
 
@@ -1112,7 +1135,7 @@ def label_quality_figure(ds: pd.DataFrame, match: pd.DataFrame, chem: dict, path
     a.invert_yaxis()
     a.set_xlabel("particles (%)")
     a.set_title("Match warnings per class", loc="left")
-    a.legend(loc="lower right")
+    a.legend(loc="center right")
     a.grid(axis="y", visible=False)
 
     # right: Fe per origin group
@@ -1219,9 +1242,11 @@ def section_label_quality(ds: pd.DataFrame, out: Path, log=print) -> dict:
         chem["matrix"].to_excel(xw, sheet_name="matrix_elements")
         model["by_origin"].to_excel(xw, sheet_name="model_by_origin")
         model["by_flag"].to_excel(xw, sheet_name="model_by_match_warning")
-        pd.DataFrame([{"flag": k, "meaning": v} for k, v in FLAGS.items()]
-                     + [{"flag": "flag_model", "meaning": f"model gives the own class < {MODEL_DISAGREES:g} "
-                                                          f"and predicts another ({note})"}]
+        pd.DataFrame([{"flag": k, "definition": v} for k, v in FLAG_DEFINITIONS.items()]
+                     + [{"flag": "uncertain", "definition": "any of the four flags above"},
+                        {"flag": "flag_model", "definition": f"4_suspicious.csv only: out-of-fold logistic regression "
+                                                             f"({note}) predicts another class and gives the labelled "
+                                                             f"class a probability < {MODEL_DISAGREES:g}"}]
                      ).to_excel(xw, sheet_name="definitions", index=False)
 
     suspicious.to_csv(out / "4_suspicious.csv", index=False, float_format="%.3f")
