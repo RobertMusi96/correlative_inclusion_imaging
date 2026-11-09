@@ -13,7 +13,10 @@ Built section by section; each section writes its tables and figures into
 3. Optical appearance: VHX contrast, contrast per colour channel, pinkness
    (green / red contrast) and particle colour per class, a colour-only baseline,
    and from the crops the background brightness and overexposure per class
-   (a class recorded in brighter areas would be a confounder).
+   (a class recorded in brighter areas would be a confounder). Also from the
+   crops: shape, interior and edge features (cii.crop_features), baselines
+   adding one feature group after the other, and the single features that best
+   separate the two classes colour confuses most.
 """
 from __future__ import annotations
 
@@ -318,7 +321,7 @@ def size_figure(ds: pd.DataFrame, base: dict, path: Path):
     ax = axes[2]
     ratio = ds.vhx_ecd_um / ds.sem_ecd_um
     data = [ratio[ds.training_class == c].to_numpy() for c in classes]
-    bp = ax.boxplot(data, vert=False, whis=(5, 95), showfliers=False, widths=0.5, patch_artist=True,
+    bp = ax.boxplot(data, orientation="horizontal", whis=(5, 95), showfliers=False, widths=0.5, patch_artist=True,
                     medianprops={"color": TEXT, "linewidth": 1.5})
 
     for patch, c in zip(bp["boxes"], classes):
@@ -478,7 +481,7 @@ def crop_exposure(ds: pd.DataFrame, root: Path) -> pd.DataFrame | None:
 def _boxes(ax, data: list, labels: list, colours: list, hatches: list, xlabel: str, title: str):
     """Horizontal box plot (box = quartiles, whiskers = 5-95 %) with one box per group;
     hatched boxes mark groups that come from a rule."""
-    bp = ax.boxplot(data, vert=False, whis=(5, 95), showfliers=False, widths=0.55, patch_artist=True,
+    bp = ax.boxplot(data, orientation="horizontal", whis=(5, 95), showfliers=False, widths=0.55, patch_artist=True,
                     medianprops={"color": TEXT, "linewidth": 1.5})
 
     for patch, col, h in zip(bp["boxes"], colours, hatches):
@@ -574,9 +577,253 @@ def exposure_figure(ds: pd.DataFrame, exp: pd.DataFrame, path: Path):
     plt.close(fig)
 
 
+# crop features (shape, interior, edge; cii.crop_features): do they separate what colour cannot?
+
+FEATURE_GROUPS = ["colour", "size", "shape", "interior", "edge"]
+
+
+def colour_columns(ds: pd.DataFrame) -> pd.DataFrame:
+    """Colour features as in the colour-only baseline: contrast, channel contrasts, particle
+    colour and log pinkness."""
+    d = add_pinkness(ds)
+    cols = ["vhx_contrast_max", "vhx_contrast_R_max", "vhx_contrast_G_max", "vhx_contrast_B_max",
+            "vhx_mean_R", "vhx_mean_G", "vhx_mean_B"]
+    out = d[cols].copy()
+    out["log_pinkness"] = np.log(d.pinkness.clip(lower=0.05))
+    return out
+
+
+def feature_table(ds: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """All features side by side (colour, log VHX ECD, crop features) and the group of each
+    column."""
+    from .crop_features import FEATURES
+
+    colour = colour_columns(ds)
+    size = pd.DataFrame({"log_vhx_ecd": np.log(ds.vhx_ecd_um.clip(lower=0.1))}, index=ds.index)
+    crop = feats[list(FEATURES)]
+
+    group = {c: "colour" for c in colour} | {"log_vhx_ecd": "size"} | {c: FEATURES[c][0] for c in crop}
+    return pd.concat([colour, size, crop], axis=1), group
+
+
+def cv_balanced_accuracy(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> tuple[np.ndarray, np.ndarray]:
+    """Logistic regression (missing values -> median, standardised, class weights balanced),
+    cross-validated over the folds. Returns the balanced accuracy per fold and the
+    out-of-fold prediction of every particle."""
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    pred = np.empty(len(y), dtype=object)
+    scores = []
+
+    for k in sorted(np.unique(folds)):
+        val = folds == k
+
+        if len(np.unique(y[~val])) < 2:
+            continue                                      # tiny datasets: fold without a second class
+
+        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
+                              LogisticRegression(class_weight="balanced", max_iter=3000))
+        model.fit(X[~val], y[~val])
+        pred[val] = model.predict(X[val])
+        scores.append(balanced_accuracy_score(y[val], pred[val]))
+
+    return np.round(scores, 3), pred
+
+
+def confused_pair(confusion_pct: pd.DataFrame) -> tuple[str, str]:
+    """The two classes most often mistaken for each other (sum of both directions)."""
+    cm = confusion_pct.to_numpy()
+    both = cm + cm.T
+    np.fill_diagonal(both, -1)
+    i, j = np.unravel_index(int(np.argmax(both)), both.shape)
+    return confusion_pct.index[i], confusion_pct.index[j]
+
+
+def crop_feature_steps(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tuple) -> pd.DataFrame:
+    """Baselines adding one feature group after the other (colour, + size, + shape,
+    + interior, + edge) and the crop features alone: balanced accuracy over all classes and
+    for the confused pair alone (a model trained only on these two classes)."""
+    tv = (ds.split == "trainval").to_numpy()
+    y = ds.training_class.to_numpy()[tv]
+    folds = ds.fold.to_numpy()[tv]
+    in_pair = np.isin(y, pair)
+
+    steps = []
+    for k in range(1, len(FEATURE_GROUPS) + 1):
+        used = FEATURE_GROUPS[:k]
+        name = "colour" if k == 1 else "+ " + FEATURE_GROUPS[k - 1]
+        steps.append((name, used))
+    steps.append(("crop features only", ["shape", "interior", "edge"]))
+
+    rows = []
+    for name, used in steps:
+        cols = [c for c in X.columns if group[c] in used]
+        Xs = X[cols].to_numpy(dtype=float)[tv]
+
+        all_scores, _ = cv_balanced_accuracy(Xs, y, folds, class_order(ds))
+        pair_scores, _ = cv_balanced_accuracy(Xs[in_pair], y[in_pair], folds[in_pair], list(pair))
+
+        rows.append({"step": name, "groups": ", ".join(used), "n_features": len(cols),
+                     "balanced_accuracy": round(float(all_scores.mean()), 3),
+                     "per_fold": ", ".join(map(str, all_scores)),
+                     "pair_balanced_accuracy": round(float(pair_scores.mean()), 3),
+                     "pair_per_fold": ", ".join(map(str, pair_scores))})
+
+    return pd.DataFrame(rows)
+
+
+def feature_ranking(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tuple) -> pd.DataFrame:
+    """How well each single feature separates the confused pair (training data): area under
+    the ROC curve, turned so that 0.5 = no separation and 1 = perfect, and the class with the
+    higher values."""
+    from sklearn.metrics import roc_auc_score
+    from .crop_features import FEATURES
+
+    labels = {c: FEATURES[c][1] for c in FEATURES} | {"log_vhx_ecd": "VHX ECD (log)", "log_pinkness": "pinkness (log)"}
+    labels |= {f"vhx_mean_{ch}": f"particle colour {ch} (0-255)" for ch in "RGB"}
+    labels |= {c: APPEARANCE.get(c, c) for c in X.columns if c not in labels}
+
+    sel = ((ds.split == "trainval") & ds.training_class.isin(pair)).to_numpy()
+    is_second = (ds.training_class.to_numpy()[sel] == pair[1]).astype(int)
+
+    rows = []
+    for c in X.columns:
+        v = X[c].to_numpy(dtype=float)[sel]
+        ok = np.isfinite(v)
+
+        if ok.sum() < 10 or len(np.unique(is_second[ok])) < 2 or np.nanstd(v) == 0:
+            continue
+
+        auc = roc_auc_score(is_second[ok], v[ok])
+        rows.append({"feature": c, "label": labels[c], "group": group[c], "auc": round(max(auc, 1 - auc), 3),
+                     "higher_in": pair[1] if auc >= 0.5 else pair[0],
+                     f"median_{pair[0]}": round(float(np.nanmedian(v[is_second == 0])), 3),
+                     f"median_{pair[1]}": round(float(np.nanmedian(v[is_second == 1])), 3)})
+
+    return pd.DataFrame(rows).sort_values("auc", ascending=False).reset_index(drop=True)
+
+
+def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple, chance: float, path: Path):
+    """Figure of the crop features: balanced accuracy when adding one feature group after
+    the other, for all classes and for the confused pair (left), and the features that best
+    separate the pair on their own (right)."""
+    use_style()
+    fig, (a, b) = plt.subplots(1, 2, figsize=(16, 5.6), gridspec_kw={"width_ratios": [1, 1.1]})
+
+    # left: accuracy per step, two series (all classes, the pair)
+    x = np.arange(len(steps))
+    series = [("balanced_accuracy", "all classes", CLASS_COLOURS[0], chance),
+              ("pair_balanced_accuracy", f"{pair[0]} vs {pair[1]}", CLASS_COLOURS[1], 0.5)]
+
+    for col, label, colour, ch in series:
+        v = 100 * steps[col].to_numpy()
+        a.plot(x, v, marker="o", color=colour, linewidth=2, label=label)
+        a.axhline(100 * ch, color=colour, linewidth=0.8, linestyle=":")
+
+        for xi, vi in zip(x, v):
+            a.text(xi, vi + 1.5, f"{vi:.0f}", ha="center", va="bottom", color=TEXT)
+
+    a.set_xticks(x, steps.step, rotation=20, ha="right")
+    a.set_ylim(min(30, 100 * chance - 5), 100)
+    a.set_ylabel("balanced accuracy (%)")
+    a.set_title("Adding one feature group after the other (cross-validated)", loc="left")
+    a.legend(loc="lower right")
+    a.grid(axis="x", visible=False)
+
+    # right: best single features for the pair
+    top = ranking.head(15).iloc[::-1]
+    y = np.arange(len(top))
+    b.barh(y, top.auc - 0.5, left=0.5, height=0.6, color=MUTED, edgecolor="white")
+
+    for yi, (_, r) in zip(y, top.iterrows()):
+        b.text(r.auc + 0.005, yi, f"{r.auc:.2f}  higher in {r.higher_in}", va="center", color=MUTED, fontsize=8)
+
+    b.set_yticks(y, [f"{r.group}: {r.label}" for _, r in top.iterrows()])
+    b.set_xlim(0.5, 1.05)
+    b.set_xlabel("separation of the pair by this feature alone (AUC, 0.5 = none)")
+    b.set_title(f"Best single features: {pair[0]} vs {pair[1]}", loc="left")
+    b.grid(axis="y", visible=False)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame, path: Path, n: int = 6):
+    """Box plots per class of the n crop features (shape, interior, edge) that best separate
+    the confused pair."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    top = ranking[ranking.group.isin(["shape", "interior", "edge"])].head(n)
+    labels = [f"{c}\n(n={int((ds.training_class == c).sum())})" for c in classes]
+
+    cols = 3
+    rows = int(np.ceil(len(top) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(17, 3.6 * rows), squeeze=False)
+
+    for ax, (_, r) in zip(axes.ravel(), top.iterrows()):
+        data = [X.loc[ds.training_class == c, r.feature].dropna().to_numpy() for c in classes]
+        _boxes(ax, data, labels, [colours[c] for c in classes], [""] * len(classes), r.label,
+               f"{r.group}: {r.label}  (AUC {r.auc:.2f})")
+
+        if ax not in axes[:, 0]:
+            ax.set_yticklabels([])
+
+    for ax in axes.ravel()[len(top):]:
+        ax.set_visible(False)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Path, log=print) -> dict:
+    """Crop features of section 3: writes 3_crop_features.csv (per particle),
+    3_crop_features.xlsx, 3_crop_features.png and 3_crop_features_top.png, and prints the
+    baselines per step and the best single features for the most confused pair."""
+    from .crop_features import FEATURES
+
+    X, group = feature_table(ds, feats)
+    pair = confused_pair(base["confusion_pct"])
+    steps = crop_feature_steps(ds, X, group, pair)
+    ranking = feature_ranking(ds, X, group, pair)
+
+    q = feats[list(FEATURES)].assign(training_class=ds.training_class)
+    quant = q.groupby("training_class").quantile([0.25, 0.5, 0.75]).unstack().round(3)
+    quant.columns = [f"{c}_p{int(qq * 100)}" for c, qq in quant.columns]
+
+    pd.concat([ds[["crop", "training_class", "split", "fold"]], feats], axis=1).to_csv(
+        out / "3_crop_features.csv", index=False, float_format="%.4f")
+
+    with pd.ExcelWriter(out / "3_crop_features.xlsx") as xw:
+        steps.to_excel(xw, sheet_name="baselines", index=False)
+        ranking.to_excel(xw, sheet_name="ranking_pair", index=False)
+        quant.to_excel(xw, sheet_name="quantiles")
+        pd.DataFrame([{"feature": k, "group": g, "description": d} for k, (g, d) in FEATURES.items()]
+                     ).to_excel(xw, sheet_name="definitions", index=False)
+
+    crop_feature_figure(steps, ranking, pair, base["chance"], out / "3_crop_features.png")
+    crop_feature_boxes(ds, X, ranking, out / "3_crop_features_top.png")
+
+    log(f"crop features: most confused pair {pair[0]} / {pair[1]}")
+    log(steps[["step", "n_features", "balanced_accuracy", "pair_balanced_accuracy"]].to_string(index=False))
+    log("best single features for the pair (AUC):")
+    log(ranking.head(10)[["feature", "group", "auc", "higher_in"]].to_string(index=False))
+
+    return {"features": feats, "steps": steps, "ranking": ranking, "pair": pair}
+
+
 def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
     """Section 3: writes 3_appearance.xlsx, 3_appearance.png and, if the crops are present,
-    3_exposure.png; prints medians, pink shares, the colour-only baseline and the exposure."""
+    3_exposure.png and the crop features (3_crop_features.*); prints medians, pink shares,
+    the colour-only baseline, the exposure and the crop feature baselines."""
+    from .crop_features import dataset_features
+
     t = appearance_tables(ds)
     base = colour_baseline(ds)
     exp = crop_exposure(ds, out.parent)
@@ -607,11 +854,15 @@ def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
     log(base["confusion_pct"].to_string())
 
     if exp is None:
-        log("crops not found - background brightness and overexposure skipped")
-    else:
-        exposure_figure(ds, exp, out / "3_exposure.png")
-        e = exp.assign(training_class=ds.training_class).groupby("training_class").median().round(1)
-        log("crops, median per class: background grey level and saturated pixels (%)")
-        log(e.to_string())
+        log("crops not found - background brightness, overexposure and crop features skipped")
+        return {"tables": t, "baseline": base, "exposure": None, "crop_features": None}
 
-    return {"tables": t, "baseline": base, "exposure": exp}
+    exposure_figure(ds, exp, out / "3_exposure.png")
+    e = exp.assign(training_class=ds.training_class).groupby("training_class").median().round(1)
+    log("crops, median per class: background grey level and saturated pixels (%)")
+    log(e.to_string())
+
+    feats = dataset_features(ds, out.parent)
+    cf = crop_feature_part(ds, feats, base, out, log)
+
+    return {"tables": t, "baseline": base, "exposure": exp, "crop_features": cf}

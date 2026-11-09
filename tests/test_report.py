@@ -68,14 +68,32 @@ def test_appearance_section_with_crops(tmp_path):
     b = colour_baseline(ds)
     assert b["confusion_pct"].loc["B", "B"] > 90
 
-    (tmp_path / "crops").mkdir(); (tmp_path / "masks").mkdir()
+    # crops: dark particle on a bright background, round for A and C, elongated for B
+    (tmp_path / "crops").mkdir()
+    (tmp_path / "masks").mkdir()
     ds["crop"] = [f"crops/{i}.png" for i in range(len(ds))]
     ds["mask"] = [f"masks/{i}.png" for i in range(len(ds))]
-    img = np.full((96, 96, 3), 250, np.uint8); img[:10] = 255
-    msk = np.zeros((96, 96), np.uint8); msk[40:56, 40:56] = 255
-    for i in range(len(ds)):
-        Image.fromarray(img).save(tmp_path / ds.crop[i]); Image.fromarray(msk).save(tmp_path / ds["mask"][i])
-    out = tmp_path / "report"; out.mkdir()
+    yy, xx = np.mgrid[:96, :96] - 48
+
+    for i, cls in enumerate(ds.training_class):
+        a = 9 if cls == "B" else 5
+        b = 3 if cls == "B" else 5
+        inside = (xx / (a * rng.uniform(0.9, 1.1))) ** 2 + (yy / b) ** 2 <= 1
+        img = np.full((96, 96, 3), 250, np.uint8)
+        img[:10] = 255
+        img[inside] = 120
+        Image.fromarray(img).save(tmp_path / ds.crop[i])
+        Image.fromarray((inside * 255).astype(np.uint8)).save(tmp_path / ds["mask"][i])
+
+    out = tmp_path / "report"
+    out.mkdir()
     r = section_appearance(ds, out, log=lambda *a: None)
     assert np.isclose(r["exposure"].saturated_pct.iloc[0], 100 * 10 / 96, atol=0.1)
-    assert {f.name for f in out.iterdir()} == {"3_appearance.xlsx", "3_appearance.png", "3_exposure.png"}
+    assert {f.name for f in out.iterdir()} == {"3_appearance.xlsx", "3_appearance.png", "3_exposure.png",
+                                               "3_crop_features.csv", "3_crop_features.xlsx",
+                                               "3_crop_features.png", "3_crop_features_top.png"}
+
+    cf = r["crop_features"]
+    shape = cf["steps"].set_index("step")
+    assert shape.loc["+ shape", "balanced_accuracy"] >= shape.loc["+ size", "balanced_accuracy"]
+    assert cf["ranking"].set_index("feature").loc["shape_aspect_ratio", "auc"] > 0.95 or "B" not in cf["pair"]

@@ -266,7 +266,15 @@ section by section; `--sections 1,2` runs a selection):
    red contrast, > 1.3 = pink) and particle colour per class and source,
    colour-only baseline (no size); from the crops: background brightness and
    saturated pixels per class (`3_appearance.xlsx`, `3_appearance.png`,
-   `3_exposure.png`).
+   `3_exposure.png`). Also from the crops (`cii.crop_features`): hand-made
+   shape, interior and edge features (`3_crop_features.csv` per particle),
+   baselines adding colour, size, shape, interior and edge one after the other,
+   for all classes and for the most confused pair, and the single features that
+   best separate that pair (`3_crop_features.xlsx`, `3_crop_features.png`,
+   `3_crop_features_top.png`). The features use their own object (half-maximum
+   patch around the darkest point in the mask) and region (out to the faint
+   edge, contrast >= 0.04, at most 2 µm further), so they do not depend on
+   whether the matching saved an object or a region mask.
 
 ```bash
 python scripts/dataset_report.py data/datasets/dataset_v1

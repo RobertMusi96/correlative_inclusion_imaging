@@ -6,7 +6,9 @@ one file group per section (prefix = section number):
     1  composition and balance: 1_composition.xlsx, 1_composition.png, 1_origin.png
     2  size: 2_size.xlsx, 2_size.png (size per class, VHX/SEM ratio, size-only baseline)
     3  optical appearance: 3_appearance.xlsx, 3_appearance.png, 3_exposure.png (contrast,
-       colour, pinkness, colour-only baseline; background and overexposure from the crops)
+       colour, pinkness, colour-only baseline; background and overexposure from the crops),
+       3_crop_features.csv/.xlsx/.png, 3_crop_features_top.png (shape, interior and edge
+       features from the crops, baselines adding them, best features for the confused pair)
 
 Example:
     python scripts/dataset_report.py data/datasets/dataset_v1
