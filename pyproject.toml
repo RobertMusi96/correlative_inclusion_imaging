@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+cnn = ["torch", "torchvision"]   # CNN training (cii.cnn, scripts/train_cnn.py)
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -12,6 +12,9 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
+For the CNN (`cii.cnn`, `scripts/train_cnn.py`) also the optional dependencies
+PyTorch and torchvision: `uv sync --extra cnn` (or `pip install -e ".[cnn]"`).
+
 Image data is not part of the repository (see `.gitignore`); keep it under `data/`
 or anywhere else and pass paths to the scripts.
 
@@ -317,6 +320,34 @@ training / validation particles only.
 
 ```bash
 uv run python scripts/dataset_report.py data/datasets/dataset_v1 --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images"
+```
+
+### `scripts/train_cnn.py`
+
+Cross-validation of a CNN on the crops of a dataset (needs `--extra cnn`). Only
+the training / validation particles are used; the test set is never loaded.
+
+- Input per particle: the RGB crop and its mask as a 4th channel (which object
+  to classify), normalised with mean and SD of the training folds.
+- Augmentation (training): one of the 8 orientations (90° rotations, mirroring)
+  and a brightness factor 1 ± 0.1; no colour shift.
+- Network: ResNet-18 pre-trained on ImageNet (downloaded by torchvision on first
+  use); first layer widened to 4 channels (RGB filters kept, mask filters start
+  at zero), last layer one output per class.
+- Training: cross-entropy with balanced class weights, AdamW, cosine learning
+  rate decay; same settings for all folds. Score: balanced accuracy after the
+  last epoch (no choice of the best epoch), validation with the mean over the 8
+  orientations.
+- Output `dataset_vN/runs/<name>/`: `config.json`, `history.csv`,
+  `predictions.csv` (out-of-fold class probabilities per particle),
+  `metrics.json`, `curves.png`, `confusion.png`, `model_fold<k>.pt`.
+
+On a CPU one epoch takes about 20 s with 2 threads (≈ 1,400 training crops), i.e.
+about 10 min per fold for 30 epochs.
+
+```bash
+uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name quick --folds 0 --epochs 3
+uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name resnet18_rgb
 ```
 
 ## Results so far
