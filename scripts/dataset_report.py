@@ -10,7 +10,8 @@ blocks; all other statistics, baselines and figures use the training / validatio
     3  optical appearance: 3_appearance.xlsx, 3_appearance.png, 3_exposure.png (contrast,
        colour, pinkness, colour-only baseline; background and overexposure from the crops),
        3_crop_features.csv/.xlsx/.png, 3_crop_features_top.png (shape, interior and edge
-       features from the crops, baselines adding them, best features for the confused pair)
+       features from the crops, neighbour features from the VHX detection, baselines adding
+       them, best features for the confused pair)
     4  label quality: 4_label_quality.xlsx, 4_label_quality.png, 4_chemistry.png,
        4_model_by_origin.png, 4_suspicious.csv (match warnings, EDS per class and AZtec class,
        model errors per origin and match warning, particles worth a look)
@@ -48,6 +49,8 @@ def main():
                     help=f"sections to run, e.g. 1 or 1,2 (default all: {','.join(map(str, SECTIONS))})")
     ap.add_argument("--bse", type=Path, help="section 6: folder with the BSE field images (searched with subfolders)")
     ap.add_argument("--matches", type=Path, help="section 6: matches.csv for the SEM boxes (default: from dataset_info.json)")
+    ap.add_argument("--vhx", type=Path, help="sections 3, 4, 6: VHX detection folder (objects.csv, images.csv) for the "
+                                             "neighbour features (default: from dataset_info.json)")
     args = ap.parse_args()
 
     csv = args.dataset / "dataset.csv"
@@ -69,7 +72,9 @@ def main():
         if k in (1, 5):
             SECTIONS[k](ds, out)
         elif k == 6:
-            SECTIONS[k](dev, out, bse=args.bse, matches=args.matches)
+            SECTIONS[k](dev, out, bse=args.bse, matches=args.matches, vhx=args.vhx)
+        elif k in (3, 4):
+            SECTIONS[k](dev, out, vhx=args.vhx)
         else:
             SECTIONS[k](dev, out)
     print(f"\n-> {out}")

@@ -634,7 +634,47 @@ def exposure_figure(ds: pd.DataFrame, exp: pd.DataFrame, path: Path):
 
 # crop features (shape, interior, edge; cii.crop_features): do they separate what colour cannot?
 
-FEATURE_GROUPS = ["colour", "size", "shape", "interior", "edge"]
+FEATURE_GROUPS = ["colour", "size", "shape", "interior", "edge", "neighbours"]
+IMAGE_GROUPS = ["shape", "interior", "edge", "neighbours"]      # computed from the crops / VHX detection
+
+
+def feature_definitions() -> dict:
+    """Group and label of every crop feature (cii.crop_features) and neighbour feature
+    (cii.neighbours): column -> (group, label)."""
+    from .crop_features import FEATURES as CROP
+    from .neighbours import FEATURES as NEIGHBOURS
+
+    return dict(CROP) | {c: ("neighbours", label) for c, label in NEIGHBOURS.items()}
+
+
+def detection_folder(root: Path, vhx: Path | None = None) -> Path | None:
+    """VHX detection folder for the neighbour features: vhx if given, otherwise the one recorded
+    in dataset_info.json at export (None if neither is known)."""
+    import json
+
+    if vhx is not None:
+        return Path(vhx)
+
+    info = Path(root) / "dataset_info.json"
+    if info.exists():
+        folder = json.loads(info.read_text()).get("vhx_detection")
+        return Path(folder) if folder else None
+
+    return None
+
+
+def neighbour_columns(ds: pd.DataFrame, root: Path, vhx: Path | None = None, log=print) -> pd.DataFrame | None:
+    """Neighbour features (cii.neighbours) of the dataset particles from the VHX detection
+    folder (vhx or dataset_info.json); None, with a note, if the folder is not found."""
+    from .neighbours import detection_features
+
+    folder = detection_folder(root, vhx)
+    nb = detection_features(ds, folder) if folder is not None else None
+
+    if nb is None:
+        log(f"VHX detection not found ({folder}) - neighbour features skipped; give the folder with --vhx")
+
+    return nb
 
 
 def colour_columns(ds: pd.DataFrame) -> pd.DataFrame:
@@ -649,16 +689,16 @@ def colour_columns(ds: pd.DataFrame) -> pd.DataFrame:
 
 
 def feature_table(ds: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """All features side by side (colour, log VHX ECD, crop features) and the group of each
-    column."""
-    from .crop_features import FEATURES
+    """All features side by side (colour, log VHX ECD, crop features and, if present, neighbour
+    features) and the group of each column."""
+    defs = feature_definitions()
 
     colour = colour_columns(ds)
     size = pd.DataFrame({"log_vhx_ecd": np.log(ds.vhx_ecd_um.clip(lower=0.1))}, index=ds.index)
-    crop = feats[list(FEATURES)]
+    image = feats[[c for c in defs if c in feats]]
 
-    group = {c: "colour" for c in colour} | {"log_vhx_ecd": "size"} | {c: FEATURES[c][0] for c in crop}
-    return pd.concat([colour, size, crop], axis=1), group
+    group = {c: "colour" for c in colour} | {"log_vhx_ecd": "size"} | {c: defs[c][0] for c in image}
+    return pd.concat([colour, size, image], axis=1), group
 
 
 def make_model(kind: str = "logistic"):
@@ -713,19 +753,25 @@ def confused_pair(confusion_pct: pd.DataFrame) -> tuple[str, str]:
 
 def crop_feature_steps(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tuple) -> pd.DataFrame:
     """Baselines adding one feature group after the other (colour, + size, + shape,
-    + interior, + edge) and the crop features alone: balanced accuracy over all classes and
-    for the confused pair alone (a model trained only on these two classes)."""
+    + interior, + edge, + neighbours if present), the crop features alone and the neighbour
+    features alone: balanced accuracy over all classes and for the confused pair alone (a model
+    trained only on these two classes)."""
     tv = (ds.split == "trainval").to_numpy()
     y = ds.training_class.to_numpy()[tv]
     folds = ds.fold.to_numpy()[tv]
     in_pair = np.isin(y, pair)
 
+    present = [g for g in FEATURE_GROUPS if g in group.values()]
+
     steps = []
-    for k in range(1, len(FEATURE_GROUPS) + 1):
-        used = FEATURE_GROUPS[:k]
-        name = "colour" if k == 1 else "+ " + FEATURE_GROUPS[k - 1]
+    for k in range(1, len(present) + 1):
+        used = present[:k]
+        name = "colour" if k == 1 else "+ " + present[k - 1]
         steps.append((name, used))
     steps.append(("crop features only", ["shape", "interior", "edge"]))
+
+    if "neighbours" in present:
+        steps.append(("neighbours only", ["neighbours"]))
 
     rows = []
     for name, used in steps:
@@ -749,9 +795,9 @@ def feature_ranking(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tuple)
     the ROC curve, turned so that 0.5 = no separation and 1 = perfect, and the class with the
     higher values."""
     from sklearn.metrics import roc_auc_score
-    from .crop_features import FEATURES
 
-    labels = {c: FEATURES[c][1] for c in FEATURES} | {"log_vhx_ecd": "VHX ECD (log)", "log_pinkness": "pinkness (log)"}
+    labels = {c: label for c, (_, label) in feature_definitions().items()}
+    labels |= {"log_vhx_ecd": "VHX ECD (log)", "log_pinkness": "pinkness (log)"}
     labels |= {f"vhx_mean_{ch}": f"particle colour {ch} (0-255)" for ch in "RGB"}
     labels |= {c: APPEARANCE.get(c, c) for c in X.columns if c not in labels}
 
@@ -825,12 +871,12 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
 
 
 def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame, path: Path, n: int = 6):
-    """Box plots per class of the n crop features (shape, interior, edge) that best separate
-    the confused pair."""
+    """Box plots per class of the n crop and neighbour features (shape, interior, edge,
+    neighbours) that best separate the confused pair."""
     use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
-    top = ranking[ranking.group.isin(["shape", "interior", "edge"])].head(n)
+    top = ranking[ranking.group.isin(IMAGE_GROUPS)].head(n)
     labels = [f"{c}\n(n={int((ds.training_class == c).sum())})" for c in classes]
 
     cols = 3
@@ -848,7 +894,7 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
     for ax in axes.ravel()[len(top):]:
         ax.set_visible(False)
 
-    fig.suptitle("Crop features ranked by how well each alone separates the confused pair (AUC); "
+    fig.suptitle("Crop and neighbour features ranked by how well each alone separates the confused pair (AUC); "
                  "the logistic regression baselines on all features are in 3_crop_features.png",
                  x=0.01, ha="left", color=MUTED)
     fig.tight_layout(rect=(0, 0, 1, 1 - 0.3 / fig.get_figheight()))
@@ -859,15 +905,17 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
 def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Path, log=print) -> dict:
     """Crop features of section 3: writes 3_crop_features.csv (per particle),
     3_crop_features.xlsx, 3_crop_features.png and 3_crop_features_top.png, and prints the
-    baselines per step and the best single features for the most confused pair."""
-    from .crop_features import FEATURES
+    baselines per step and the best single features for the most confused pair. feats holds
+    the crop features and, if computed, the neighbour features."""
+    defs = feature_definitions()
+    used = [c for c in defs if c in feats]
 
     X, group = feature_table(ds, feats)
     pair = confused_pair(base["confusion_pct"])
     steps = crop_feature_steps(ds, X, group, pair)
     ranking = feature_ranking(ds, X, group, pair)
 
-    q = feats[list(FEATURES)].assign(training_class=ds.training_class)
+    q = feats[used].assign(training_class=ds.training_class)
     quant = q.groupby("training_class").quantile([0.25, 0.5, 0.75]).unstack().round(3)
     quant.columns = [f"{c}_p{int(qq * 100)}" for c, qq in quant.columns]
 
@@ -878,7 +926,7 @@ def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Pa
         steps.to_excel(xw, sheet_name="baselines", index=False)
         ranking.to_excel(xw, sheet_name="ranking_pair", index=False)
         quant.to_excel(xw, sheet_name="quantiles")
-        pd.DataFrame([{"feature": k, "group": g, "description": d} for k, (g, d) in FEATURES.items()]
+        pd.DataFrame([{"feature": c, "group": defs[c][0], "description": defs[c][1]} for c in used]
                      ).to_excel(xw, sheet_name="definitions", index=False)
 
     crop_feature_figure(steps, ranking, pair, base["chance"], out / "3_crop_features.png")
@@ -892,9 +940,10 @@ def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Pa
     return {"features": feats, "steps": steps, "ranking": ranking, "pair": pair}
 
 
-def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
+def section_appearance(ds: pd.DataFrame, out: Path, log=print, vhx: Path | None = None) -> dict:
     """Section 3: writes 3_appearance.xlsx, 3_appearance.png and, if the crops are present,
-    3_exposure.png and the crop features (3_crop_features.*); prints medians, pink shares,
+    3_exposure.png and the crop features (3_crop_features.*), with the neighbour features if
+    the VHX detection folder is found (vhx or dataset_info.json); prints medians, pink shares,
     the colour-only baseline, the exposure and the crop feature baselines."""
     from .crop_features import dataset_features
 
@@ -937,6 +986,11 @@ def section_appearance(ds: pd.DataFrame, out: Path, log=print) -> dict:
     log(e.to_string())
 
     feats = dataset_features(ds, out.parent)
+    nb = neighbour_columns(ds, out.parent, vhx, log)
+
+    if nb is not None:
+        feats = feats.join(nb)
+
     cf = crop_feature_part(ds, feats, base, out, log)
 
     return {"tables": t, "baseline": base, "exposure": exp, "crop_features": cf}
@@ -1057,30 +1111,34 @@ def chemistry_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {"present_pct": share, "median_wt": median, "matrix": matrix_q}
 
 
-def model_features(ds: pd.DataFrame, out: Path) -> tuple[pd.DataFrame, str]:
-    """Features for the section 4 model: all of section 3 (colour, size, shape, interior, edge)
-    if the crop features exist (3_crop_features.csv, or computed from the crops), otherwise
-    colour and size only. Returns the table and a short description."""
-    from .crop_features import FEATURES, dataset_features
+def model_features(ds: pd.DataFrame, out: Path, vhx: Path | None = None) -> tuple[pd.DataFrame, str]:
+    """Features for the models of sections 4 and 6: all of section 3 (colour, size, shape,
+    interior, edge, and neighbours if computed) from 3_crop_features.csv, or computed from the
+    crops (and the VHX detection) if that file is missing; colour and size only without
+    crops. Returns the table and a short description of the groups."""
+    from .crop_features import dataset_features
 
+    defs = feature_definitions()
     feats = None
     csv = out / "3_crop_features.csv"
 
     if csv.exists():
         f = pd.read_csv(csv).set_index("crop")
         if set(ds.crop) <= set(f.index):
-            feats = f.loc[ds.crop, list(FEATURES)].set_index(ds.index)
+            feats = f.loc[ds.crop, [c for c in defs if c in f]].set_index(ds.index)
 
     if feats is None:
         feats = dataset_features(ds, out.parent)
+        nb = neighbour_columns(ds, out.parent, vhx, log=lambda *a: None) if feats is not None else None
+        feats = feats.join(nb) if nb is not None else feats
 
     if feats is None:
         X = colour_columns(ds)
         X["log_vhx_ecd"] = np.log(ds.vhx_ecd_um.clip(lower=0.1))
         return X, "colour + size; no crops"
 
-    X, _ = feature_table(ds, feats)
-    return X, "colour + size + shape + interior + edge"
+    X, group = feature_table(ds, feats)
+    return X, " + ".join(g for g in FEATURE_GROUPS if g in group.values())
 
 
 def cv_probabilities(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> np.ndarray:
@@ -1278,7 +1336,7 @@ def model_origin_figure(ds: pd.DataFrame, tables: dict, note: str, path: Path):
     plt.close(fig)
 
 
-def section_label_quality(ds: pd.DataFrame, out: Path, log=print) -> dict:
+def section_label_quality(ds: pd.DataFrame, out: Path, log=print, vhx: Path | None = None) -> dict:
     """Section 4: writes 4_label_quality.xlsx, 4_suspicious.csv, 4_label_quality.png,
     4_chemistry.png and 4_model_by_origin.png; prints the match warnings per class, the model
     accuracy per origin group and for certain / uncertain matches."""
@@ -1286,7 +1344,7 @@ def section_label_quality(ds: pd.DataFrame, out: Path, log=print) -> dict:
     match = match_table(ds, flags)
     chem = chemistry_tables(ds)
 
-    X, note = model_features(ds, out)
+    X, note = model_features(ds, out, vhx)
     pred = model_predictions(ds, X)
     model = model_tables(ds, flags, pred)
     suspicious = suspicious_list(ds, flags, pred)
@@ -1796,11 +1854,11 @@ def galleries(ds: pd.DataFrame, root: Path, out: Path) -> list[Path]:
     return files
 
 
-def flagged_particles(ds: pd.DataFrame, out: Path) -> tuple[pd.DataFrame, str]:
+def flagged_particles(ds: pd.DataFrame, out: Path, vhx: Path | None = None) -> tuple[pd.DataFrame, str]:
     """Training / validation particles the cross-validated model of section 4 confidently
     disagrees with (predicts another class, own class probability < MODEL_DISAGREES), sorted
     by origin group and own class probability."""
-    X, note = model_features(ds, out)
+    X, note = model_features(ds, out, vhx)
     pred = model_predictions(ds, X)
     flags = label_flags(ds)
 
@@ -1962,11 +2020,12 @@ def flagged_review(flagged: pd.DataFrame, out: Path) -> Path:
 
 
 def section_baselines(ds: pd.DataFrame, out: Path, log=print, bse: Path | None = None,
-                      matches: Path | None = None) -> dict:
+                      matches: Path | None = None, vhx: Path | None = None) -> dict:
     """Section 6: writes 6_baselines.xlsx and 6_baselines.png; if the crops are present also
     the galleries (6_gallery_*.png), the pages of model-flagged particles (6_flagged_*.png,
-    with BSE crops if a BSE folder is given) and 6_flagged_review.xlsx."""
-    X, note = model_features(ds, out)
+    with BSE crops if a BSE folder is given) and 6_flagged_review.xlsx. vhx: detection folder
+    for the neighbour features, if 3_crop_features.csv is missing."""
+    X, note = model_features(ds, out, vhx)
     table, confusion = final_baselines(ds, X, note)
 
     with pd.ExcelWriter(out / "6_baselines.xlsx") as xw:
@@ -1986,7 +2045,7 @@ def section_baselines(ds: pd.DataFrame, out: Path, log=print, bse: Path | None =
         return {"baselines": table, "confusion": confusion}
 
     gal = galleries(ds, root, out)
-    flagged, _ = flagged_particles(ds, out)
+    flagged, _ = flagged_particles(ds, out, vhx)
     lookup = bse_lookup(ds, root, bse, matches, log)
     pages = flagged_pages(flagged, ds, root, out, lookup)
     review = flagged_review(flagged, out)

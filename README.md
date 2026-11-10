@@ -280,7 +280,14 @@ training / validation particles only.
    `3_crop_features_top.png`). The features use their own object (half-maximum
    patch around the darkest point in the mask) and region (out to the faint
    edge, contrast >= 0.04, at most 2 µm further), so they do not depend on
-   whether the matching saved an object or a region mask.
+   whether the matching saved an object or a region mask. With the VHX
+   detection folder (`--vhx`, default from `dataset_info.json`) also neighbour
+   features (`cii.neighbours`) from all detected VHX objects, including those
+   below the ECD limit, never the classes of neighbouring particles: objects
+   per 1000 µm² within 10, 25 and 50 µm (over the scanned part of the circle),
+   distance, size, contrast and pinkness of the nearest object, share of pink
+   objects, mean size and linearity of the objects within 25 µm. Overlapping
+   images: each object counts only in its most central view.
 4. Label quality: match warnings per class (relaxed match, several VHX
    candidates, SEM neighbour, VHX / SEM size ratio outside 0.5-2), EDS per
    training class and original AZtec class (elements present without the matrix
