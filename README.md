@@ -130,7 +130,7 @@ object is stored (`contrast_R/G/B_mean`, `contrast_R/G/B_max`).
 # whole series: tables only, 4 parallel processes (~2 s per image and process)
 uv run python scripts/detect_inclusions.py data/MnB/vhx_500x/*.tif -o data/results/vhx_inclusion_detection/contrast_per_channel/detection_500x --no-figures -j 4
 # a few images with review figures (same parameters -> same objects)
-python scripts/detect_inclusions.py data/MnB/vhx_500x/*_00001*.tif -o results/check_500x
+uv run python scripts/detect_inclusions.py data/MnB/vhx_500x/*_00001*.tif -o results/check_500x
 ```
 
 Writes `objects.csv` (pixel and stage coordinates, area, ECD, shape, contrast,
