@@ -8,10 +8,17 @@ up to 18 µm). Per image pair:
 1. pairing: the image of the other mode with the same stage position as the
    bright-field image (within MAX_STAGE_DIFF_UM, same magnification),
 2. shift: phase correlation of the two edge images (Gaussian-smoothed grey
-   image, gradient magnitude; the edges look alike in every lighting mode) on
-   the whole image and on its four quadrants; the pair is accepted if every
-   quadrant agrees with the whole image within QUADRANT_TOL_PX (pure shift, no
-   rotation or scaling),
+   image, gradient magnitude) on the whole image and on its four quadrants (5
+   estimates). The whole-image shift is accepted if
+   a) at least MIN_AGREE of the 5 estimates lie within AGREE_TOL_PX of their
+      median and the whole-image shift is one of them (pure shift; a quadrant
+      with little structure may give a wrong peak), or
+   b) it lies within NEIGHBOUR_TOL_PX of the median whole-image shift of the
+      N_NEIGHBOURS images recorded just before and after it (the stage error
+      drifts slowly during a pass: dark field of the first dataset, median
+      deviation 0.2 px),
+   otherwise the image pair is rejected (column check: quadrants / neighbours /
+   rejected),
 3. crops: the same window as the bright-field crop of each particle, moved by
    the rounded shift. A window that would leave the image gives no crop.
 
@@ -28,7 +35,10 @@ import pandas as pd
 
 LIGHTING_NAMES = {"df": "dark field", "ml": "multi-lighting"}   # short name -> name in tables and figures
 MAX_STAGE_DIFF_UM = 2.0         # pairing: largest difference of the stored stage positions
-QUADRANT_TOL_PX = 1.0           # shift check: quadrants must agree with the whole image within this
+AGREE_TOL_PX = 1.0              # shift check a): estimates agreeing with their median within this
+MIN_AGREE = 3                   # shift check a): of the 5 estimates (whole image + 4 quadrants)
+NEIGHBOUR_TOL_PX = 1.0          # shift check b): whole-image shift against the median of the neighbours
+N_NEIGHBOURS = 8                # shift check b): images recorded just before and after (half each)
 EDGE_SIGMA_PX = 1.5             # smoothing before the gradient (edge image)
 
 
@@ -91,23 +101,46 @@ def edge_image(rgb: np.ndarray) -> np.ndarray:
 def measure_shift(bright: np.ndarray, other: np.ndarray) -> dict:
     """Shift (rows, columns) that maps the other image onto the bright-field image: the pixel
     (r, c) of the bright-field image shows the same place as (r - shift_row, c - shift_col) of
-    the other image. Measured on the whole image and checked on the four quadrants."""
+    the other image. Measured on the whole image and on the four quadrants; quadrant check a)
+    of the module docstring (n_agree, quadrants_ok)."""
     from skimage.registration import phase_cross_correlation
 
     eb, eo = edge_image(bright), edge_image(other)
-    shift, _, _ = phase_cross_correlation(eb, eo, upsample_factor=10)
-
     h, w = eb.shape
-    quads = []
+    estimates = [phase_cross_correlation(eb, eo, upsample_factor=10)[0]]
+
     for r0 in (0, h // 2):
         for c0 in (0, w // 2):
             q, _, _ = phase_cross_correlation(eb[r0:r0 + h // 2, c0:c0 + w // 2], eo[r0:r0 + h // 2, c0:c0 + w // 2],
                                               upsample_factor=10)
-            quads.append(q)
+            estimates.append(q)
 
-    dev = float(np.max(np.hypot(*(np.array(quads) - shift).T)))
-    return {"shift_row": round(float(shift[0]), 2), "shift_col": round(float(shift[1]), 2),
-            "quadrant_dev_px": round(dev, 2), "ok": dev <= QUADRANT_TOL_PX}
+    est = np.array(estimates)
+    med = np.median(est, axis=0)
+    dist = np.hypot(*(est - med).T)
+    agree = dist <= AGREE_TOL_PX
+
+    return {"shift_row": round(float(est[0, 0]), 2), "shift_col": round(float(est[0, 1]), 2),
+            "quadrant_dev_px": round(float(np.max(np.hypot(*(est[1:] - est[0]).T))), 2),
+            "n_agree": int(agree.sum()), "quadrants_ok": bool(agree.sum() >= MIN_AGREE and agree[0])}
+
+
+def neighbour_check(table: pd.DataFrame) -> pd.Series:
+    """Check b) of the module docstring for every measured image pair: deviation (px) of its
+    whole-image shift from the median whole-image shift of the N_NEIGHBOURS images recorded
+    just before and after it (recording order = order of the image names; NaN with fewer
+    than 4 measured neighbours)."""
+    m = table.dropna(subset=["shift_row"]).sort_values("image")
+    shifts = m[["shift_row", "shift_col"]].to_numpy()
+    half = N_NEIGHBOURS // 2
+    out = pd.Series(np.nan, index=table.index)
+
+    for k, idx in enumerate(m.index):
+        nb = [j for j in range(max(0, k - half), min(len(m), k + half + 1)) if j != k]
+        if len(nb) >= 4:
+            out[idx] = float(np.hypot(*(shifts[k] - np.median(shifts[nb], axis=0))))
+
+    return out
 
 
 def add_lighting(ds: pd.DataFrame, root: Path, name: str, bright_paths: dict, bright_images: pd.DataFrame,
@@ -115,7 +148,8 @@ def add_lighting(ds: pd.DataFrame, root: Path, name: str, bright_paths: dict, br
     """Cuts the crops of lighting mode `name` (images in folder) for every particle of the
     dataset (see module docstring) into root/crops_<name>/. bright_paths: bright-field image
     name -> file; bright_images: images.csv of the detection. Returns the dataset with the
-    column crop_<name> and the table of image pairs (shift, check, crops)."""
+    column crop_<name> and the table of image pairs (shift, checks, crops). Two passes: the
+    shifts of all image pairs first (check b needs the neighbours), then the crops."""
     import tifffile
     from PIL import Image
 
@@ -128,10 +162,8 @@ def add_lighting(ds: pd.DataFrame, root: Path, name: str, bright_paths: dict, br
     pairs = pair_images(needed, other).set_index("image")
     log(f"{len(pairs)} of {len(needed)} bright-field images with particles have a {name} image")
 
-    ds = ds.copy()
-    ds[f"crop_{name}"] = ""
+    # pass 1: shift of every image pair
     rows = []
-
     for img_name, g in ds.groupby("vhx_image"):
         row = {"image": img_name, "n_particles": len(g), "n_crops": 0}
 
@@ -144,16 +176,39 @@ def add_lighting(ds: pd.DataFrame, root: Path, name: str, bright_paths: dict, br
         light = tifffile.imread(pairs.loc[img_name, "path"], key=0)[..., :3]
         row.update({"path": pairs.loc[img_name, "path"], "stage_diff_um": pairs.loc[img_name, "stage_diff_um"]})
         row.update(measure_shift(bright, light))
+        rows.append(row)
+        log(f"{img_name}: shift ({row['shift_row']:+.1f}, {row['shift_col']:+.1f}) px, "
+            f"{row['n_agree']} of 5 estimates agree")
 
-        if not row["ok"]:
-            row["note"] = f"shift not uniform (quadrants differ by {row['quadrant_dev_px']} px)"
-            rows.append(row)
-            continue
+    table = pd.DataFrame(rows)
 
-        dr, dc = int(round(row["shift_row"])), int(round(row["shift_col"]))
+    if "shift_row" not in table:
+        return ds.assign(**{f"crop_{name}": ""}), table
+
+    # checks: quadrants (a) or neighbouring images (b)
+    table["neighbour_dev_px"] = neighbour_check(table).round(2)
+    measured = table.shift_row.notna()
+    by_quadrants = measured & table.quadrants_ok.fillna(False).astype(bool)
+    by_neighbours = measured & ~by_quadrants & (table.neighbour_dev_px <= NEIGHBOUR_TOL_PX)
+
+    table["check"] = np.where(by_quadrants, "quadrants", np.where(by_neighbours, "neighbours",
+                                                                  np.where(measured, "rejected", "")))
+    table["ok"] = by_quadrants | by_neighbours
+    rejected = measured & ~table.ok
+    table.loc[rejected, "note"] = ("shift not confirmed: " + table.n_agree[rejected].astype(int).astype(str)
+                                   + " of 5 estimates agree, " + table.neighbour_dev_px[rejected].astype(str)
+                                   + " px from the neighbouring images")
+
+    # pass 2: crops of the accepted image pairs
+    ds = ds.copy()
+    ds[f"crop_{name}"] = ""
+
+    for k, row in table[table.ok].iterrows():
+        light = tifffile.imread(row.path, key=0)[..., :3]
         h, w = light.shape[:2]
+        dr, dc = int(round(row.shift_row)), int(round(row.shift_col))
 
-        for i, r in g.iterrows():
+        for i, r in ds[ds.vhx_image == row.image].iterrows():
             size = int(r.crop_size_px)
             r0, c0 = int(r.crop_row0) - dr, int(r.crop_col0) - dc
 
@@ -163,13 +218,11 @@ def add_lighting(ds: pd.DataFrame, root: Path, name: str, bright_paths: dict, br
             crop_file = f"crops_{name}/{Path(r.crop).name}"
             Image.fromarray(np.ascontiguousarray(light[r0:r0 + size, c0:c0 + size])).save(root / crop_file)
             ds.at[i, f"crop_{name}"] = crop_file
-            row["n_crops"] += 1
+            table.at[k, "n_crops"] += 1
 
-        rows.append(row)
-        log(f"{img_name}: shift ({row['shift_row']:+.1f}, {row['shift_col']:+.1f}) px, "
-            f"{row['n_crops']} of {len(g)} crops")
-
-    return ds, pd.DataFrame(rows)
+    log(f"image pairs: {int(by_quadrants.sum())} confirmed by the quadrants, {int(by_neighbours.sum())} by the "
+        f"neighbouring images, {int(rejected.sum())} rejected")
+    return ds, table
 
 
 def overview_figure(ds: pd.DataFrame, root: Path, names: list[str], path: Path, n: int = 8, seed: int = 0):

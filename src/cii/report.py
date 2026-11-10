@@ -549,9 +549,23 @@ def crop_exposure(ds: pd.DataFrame, root: Path) -> pd.DataFrame | None:
     return pd.DataFrame(rows, index=ds.index)
 
 
+def wrap(text: str, width: int) -> str:
+    """Text broken into lines of at most `width` characters (at spaces)."""
+    import textwrap
+    return "\n".join(textwrap.wrap(text, width, break_long_words=False))
+
+
+def feature_title(group: str, label: str) -> str:
+    """Name of a feature with its group, e.g. 'shape: aspect ratio'; lighting features already
+    carry the name of their mode in the label."""
+    return label if label.startswith(f"{group}:") else f"{group}: {label}"
+
+
 def _boxes(ax, data: list, labels: list, colours: list, hatches: list, xlabel: str, title: str):
     """Horizontal box plot (box = quartiles, whiskers = 5-95 %) with one box per group;
     hatched boxes mark groups that come from a rule."""
+    from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+
     bp = ax.boxplot(data, orientation="horizontal", whis=(5, 95), showfliers=False, widths=0.55, patch_artist=True,
                     medianprops={"color": TEXT, "linewidth": 1.5})
 
@@ -565,6 +579,8 @@ def _boxes(ax, data: list, labels: list, colours: list, hatches: list, xlabel: s
     ax.set_xlabel(xlabel)
     ax.set_title(title, loc="left")
     ax.grid(axis="y", visible=False)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))                  # no '1e-8 + 0.33' offset labels,
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.3g"))          # at most 3 significant digits
 
 
 def appearance_figure(ds: pd.DataFrame, base: dict, path: Path):
@@ -880,27 +896,30 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
     the other, for all classes and for the confused pair (left), and the features that best
     separate the pair on their own (right)."""
     use_style()
-    fig, (a, b) = plt.subplots(1, 2, figsize=(16, 5.6), gridspec_kw={"width_ratios": [1, 1.1]})
+    height = max(5.6, 1.6 + 0.42 * max(len(steps), 15))
+    fig, (a, b) = plt.subplots(1, 2, figsize=(17, height), gridspec_kw={"width_ratios": [1, 1.25]})
 
-    # left: accuracy per step, two series (all classes, the pair)
-    x = np.arange(len(steps))
-    series = [("balanced_accuracy", "all classes", CLASS_COLOURS[0], chance),
-              ("pair_balanced_accuracy", f"{pair[0]} vs {pair[1]}", CLASS_COLOURS[1], 0.5)]
+    # left: accuracy per step (one row per step), two series (all classes, the pair)
+    y = np.arange(len(steps))
+    series = [("balanced_accuracy", "all classes", CLASS_COLOURS[0], chance, -0.17),
+              ("pair_balanced_accuracy", f"{short_class(pair[0])} vs {short_class(pair[1])}", CLASS_COLOURS[1], 0.5, 0.17)]
 
-    for col, label, colour, ch in series:
-        v = 100 * steps[col].to_numpy()
-        a.plot(x, v, marker="o", color=colour, linewidth=2, label=label)
-        a.axhline(100 * ch, color=colour, linewidth=0.8, linestyle=":")
+    for col, label, colour, ch, off in series:
+        v = 100 * steps[col].to_numpy(dtype=float)
+        a.plot(v, y + off, "o", color=colour, markersize=6, label=label)
+        a.axvline(100 * ch, color=colour, linewidth=0.8, linestyle=":")
 
-        for xi, vi in zip(x, v):
-            a.text(xi, vi + 1.5, f"{vi:.0f}", ha="center", va="bottom", color=TEXT)
+        for yi, vi in zip(y, v):
+            if np.isfinite(vi):
+                a.text(vi + 1.2, yi + off, f"{vi:.0f}", va="center", fontsize=8, color=TEXT)
 
-    a.set_xticks(x, steps.step, rotation=20, ha="right")
-    a.set_ylim(min(30, 100 * chance - 5), 100)
-    a.set_ylabel("balanced accuracy (%)")
+    a.set_yticks(y, steps.step)
+    a.set_ylim(len(steps) - 0.5, -0.5)
+    a.set_xlim(0, 100)
+    a.set_xlabel("balanced accuracy (%); dotted: chance level")
     a.set_title("Logistic regression, adding one feature group after the other", loc="left")
-    a.legend(loc="lower right")
-    a.grid(axis="x", visible=False)
+    a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.1), ncol=2)
+    a.grid(axis="y", visible=False)
 
     # right: best single features for the pair
     top = ranking.head(15).iloc[::-1]
@@ -910,7 +929,7 @@ def crop_feature_figure(steps: pd.DataFrame, ranking: pd.DataFrame, pair: tuple,
     for yi, (_, r) in zip(y, top.iterrows()):
         b.text(r.auc + 0.005, yi, f"{r.auc:.2f}  higher in {r.higher_in}", va="center", color=MUTED, fontsize=8)
 
-    b.set_yticks(y, [f"{r.group}: {r.label}" for _, r in top.iterrows()])
+    b.set_yticks(y, [feature_title(r.group, r.label) for _, r in top.iterrows()])
     b.set_xlim(0.5, 1.05)
     b.set_xlabel("separation of the pair by this feature alone (AUC, 0.5 = none)")
     b.set_title(f"Best single features: {pair[0]} vs {pair[1]}", loc="left")
@@ -939,8 +958,8 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
 
     for ax, (_, r) in zip(axes.ravel(), top.iterrows()):
         data = [X.loc[ds.training_class == c, r.feature].dropna().to_numpy() for c in classes]
-        _boxes(ax, data, labels, [colours[c] for c in classes], [""] * len(classes), r.label,
-               f"{r.group}: {r.label}  (AUC {r.auc:.2f})")
+        _boxes(ax, data, labels, [colours[c] for c in classes], [""] * len(classes), "",
+               wrap(feature_title(r.group, r.label), 48) + f"\nAUC {r.auc:.2f}")
 
         if ax not in axes[:, 0]:
             ax.set_yticklabels([])
@@ -1327,7 +1346,7 @@ def label_quality_figure(ds: pd.DataFrame, match: pd.DataFrame, chem: dict, path
     a.invert_yaxis()
     a.set_xlabel("particles (%)")
     a.set_title("Match warnings per class", loc="left")
-    a.legend(loc="center right")
+    a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.1), ncol=len(classes))
     a.grid(axis="y", visible=False)
 
     # right: Fe per origin group
@@ -1404,8 +1423,8 @@ def model_origin_figure(ds: pd.DataFrame, tables: dict, note: str, path: Path):
     ax.invert_yaxis()
     ax.set_xlim(0, 100)
     ax.set_xlabel("predicted as (%)")
-    ax.set_title(f"Logistic regression ({note}), cross-validated: prediction per training class (AZtec class)",
-                 loc="left")
+    ax.set_title(f"Logistic regression, cross-validated: prediction per training class (AZtec class)\n"
+                 f"Features: {note}", loc="left")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12 - 0.25 / len(t)), ncol=len(classes))
     ax.grid(axis="y", visible=False)
 

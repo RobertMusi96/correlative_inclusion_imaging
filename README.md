@@ -268,8 +268,13 @@ against its bright-field image (measured on the first image: dark field −21 /
 1. pairing by the stored stage position (within 2 µm, same magnification and
    image size),
 2. shift by phase correlation of the edge images (gradient magnitude of the
-   smoothed grey image), on the whole image and on its four quadrants; the pair
-   is rejected if a quadrant differs by more than 1 px (not a pure shift),
+   smoothed grey image) on the whole image, confirmed either by the four
+   quadrants (at least 3 of the 5 estimates within 1 px of their median, the
+   whole-image shift among them) or by the images recorded just before and after
+   (within 1 px of the median of their shifts; the stage error drifts slowly
+   during a pass); otherwise the pair is rejected. Multi-lighting images show
+   little structure besides the polishing texture, so single quadrants often
+   give a wrong peak; the second check keeps these images,
 3. the same window as the bright-field crop, moved by the rounded shift; a
    window that would leave the image gives no crop.
 

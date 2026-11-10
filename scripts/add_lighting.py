@@ -3,13 +3,14 @@
 The images of the other mode were recorded at the same nominal stage positions
 as the bright-field images, but in a separate pass; each image is shifted
 against its bright-field image by a few µm. Per image pair the shift is
-measured (phase correlation of the edge images, checked on the four quadrants)
-and the same window as the bright-field crop is cut (see cii.lighting).
+measured (phase correlation of the edge images) and confirmed by the four image
+quadrants or by the neighbouring images, and the same window as the
+bright-field crop is cut (see cii.lighting).
 
 Particles, labels, split and folds do not change. Written into the dataset:
     crops_<name>/          crops of the lighting mode, file names as in crops/
     dataset.csv            new column crop_<name> (empty if there is no crop)
-    lighting_<name>.csv    per bright-field image: paired image, shift, check, number of crops
+    lighting_<name>.csv    per bright-field image: paired image, shift, checks, number of crops
     lighting_<name>.png    sample of particles: bright field | <name>
     dataset_info.json      entry "lighting" -> <name>
 
@@ -80,9 +81,11 @@ def main():
                                                   "n_crops": int(has.sum()), "n_particles": len(ds)}
     info_file.write_text(json.dumps(info, indent=2))
 
-    bad = pairs[pairs.get("ok", pd.Series(True, index=pairs.index)).eq(False)]
-    print(f"{int(has.sum())} of {len(ds)} particles have a {args.name} crop; "
-          f"{len(bad)} image pair(s) rejected by the shift check")
+    check = pairs.get("check", pd.Series("", index=pairs.index)).fillna("")
+    missing = int(pairs.note.fillna("").str.startswith("no ").sum()) if "note" in pairs else 0
+    print(f"{int(has.sum())} of {len(ds)} particles have a {args.name} crop; image pairs: "
+          f"{int((check == 'quadrants').sum())} confirmed by the quadrants, {int((check == 'neighbours').sum())} by "
+          f"the neighbouring images, {int((check == 'rejected').sum())} rejected; {missing} image(s) without a pair")
     print(ds.assign(has=has).groupby(["split", "training_class"]).has.agg(["sum", "size"]).to_string())
     print(f"-> {root}")
 

@@ -23,7 +23,7 @@ def test_measure_shift_of_another_lighting_mode():
     other = 255 - np.roll(bright, (-21, 72), axis=(0, 1))          # inverted (like dark field) and shifted
     s = measure_shift(bright, other)
     assert abs(s["shift_row"] - 21) < 0.6 and abs(s["shift_col"] + 72) < 0.6
-    assert s["ok"]
+    assert s["quadrants_ok"] and s["n_agree"] == 5
 
     # the documented convention: bright (r, c) shows the same place as other (r - shift_row, c - shift_col)
     r, c = 200, 250
@@ -70,3 +70,14 @@ def test_light_feature_columns_and_definitions(tmp_path):
     f = dataset_light_features(ds, tmp_path, "df")
     assert f.columns[0] == "lt_df_in_diff" and f.iloc[0].notna().all() and f.iloc[1].isna().all()
     assert light_feature_definitions(f.columns)["lt_df_in_diff"][0] == "dark field"
+
+
+def test_neighbour_check_in_recording_order():
+    from cii.lighting import neighbour_check
+    names = [f"img_{k:03d}.tif" for k in range(12)]
+    rows = -10 + 0.1 * np.arange(12)                                     # slow drift
+    t = pd.DataFrame({"image": names, "shift_row": rows, "shift_col": 80.0})
+    t.loc[6, "shift_col"] = 84.0                                         # one outlier
+    dev = neighbour_check(t.sample(frac=1, random_state=0)).sort_index()  # order of the rows does not matter
+    assert dev[6] > 3.5
+    assert (dev.drop(6) < 0.5).all()
