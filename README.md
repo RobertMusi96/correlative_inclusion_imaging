@@ -256,6 +256,33 @@ Particles whose mask (object, or region for region matches) touches the border o
 the VHX image are left out, because only part of them was recorded (reported as
 "skipped: ... particle cut by the VHX image border").
 
+### `scripts/add_lighting.py`
+
+Adds the crops of another lighting mode (dark field, multi-lighting) to an
+existing dataset. These images are recorded at the same nominal stage positions
+as the bright-field images, but in a separate pass, and each image is shifted
+against its bright-field image (measured on the first image: dark field −21 /
++72 px, multi-lighting −10 / +87 px, i.e. up to 18 µm). Per image pair
+(`cii.lighting`):
+
+1. pairing by the stored stage position (within 2 µm, same magnification and
+   image size),
+2. shift by phase correlation of the edge images (gradient magnitude of the
+   smoothed grey image), on the whole image and on its four quadrants; the pair
+   is rejected if a quadrant differs by more than 1 px (not a pure shift),
+3. the same window as the bright-field crop, moved by the rounded shift; a
+   window that would leave the image gives no crop.
+
+Particles, labels, split and folds do not change. The dataset gets
+`crops_<name>/`, the column `crop_<name>` in `dataset.csv`, `lighting_<name>.csv`
+(per image: paired file, shift, quadrant check, crops) and `lighting_<name>.png`
+(sample of particles, bright field | <name>, original grey values).
+
+```bash
+uv run python scripts/add_lighting.py data/datasets/dataset_v1 --name df --images "D:\...\500x darkfield"
+uv run python scripts/add_lighting.py data/datasets/dataset_v1 --name ml --images "D:\...\500x multilighting"
+```
+
 ### `scripts/dataset_report.py`
 
 Statistical overview of a dataset folder, written to `dataset_vN/report/` (built
@@ -318,6 +345,16 @@ training / validation particles only.
    SEM field, SEM boxes from the matches.csv in `dataset_info.json` or
    `--matches`), with `6_flagged_review.xlsx` for verdicts (kept on reruns).
 
+Added lighting modes (`crop_<name>` columns) are picked up automatically:
+section 1 counts the particles with a crop of each mode; section 3 adds per
+mode eight features measured on the particle object of the bright-field crop
+(brightness inside and in the ring against the background, brightest 5 %,
+spread, edge strength, light / shadow asymmetry, colour of the excess light;
+original grey values), box plots `3_lighting_<name>.png`, and the baseline
+steps "+ <mode>" and "<mode> only" (all steps then on the particles that have a
+crop of every mode); sections 4 and 6 use these features in their model;
+galleries and flagged pages show every particle in all modes side by side.
+
 ```bash
 uv run python scripts/dataset_report.py data/datasets/dataset_v1 --bse "D:\01-Robert Musi\03_Korrelative Bildanalyse\MnB\SEM Field Images"
 ```
@@ -338,6 +375,12 @@ the training / validation particles are used; the test set is never loaded.
   rate decay; same settings for all folds. Score: balanced accuracy after the
   last epoch (no choice of the best epoch), validation with the mean over the 8
   orientations.
+- Channels (`--channels`, default `rgb,mask`): also the crops of added lighting
+  modes, e.g. `rgb,mask,df,ml` (3 channels each; ImageNet RGB filters copied to
+  every RGB group and divided by the number of groups; brightness augmentation
+  per group). Particles without a crop of a requested mode are left out; with
+  `--require df,ml` a run without these channels uses the same particles, for a
+  fair comparison.
 - Output `dataset_vN/runs/<name>/`: `config.json`, `history.csv`,
   `predictions.csv` (out-of-fold class probabilities per particle),
   `metrics.json`, `curves.png`, `confusion.png`, `model_fold<k>.pt`.
@@ -348,6 +391,8 @@ about 10 min per fold for 30 epochs.
 ```bash
 uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name quick --folds 0 --epochs 3
 uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name resnet18_rgb
+uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name rgb_same --require df,ml
+uv run python scripts/train_cnn.py data/datasets/dataset_v1 --name rgb_df --channels rgb,mask,df --require df,ml
 ```
 
 ## Results so far

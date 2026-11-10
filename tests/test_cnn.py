@@ -65,3 +65,52 @@ def test_cross_validation_run_folder(tmp_path):
     assert np.allclose(pred[["p_A", "p_B"]].sum(axis=1), 1, atol=1e-3)
     assert set(metrics["balanced_accuracy_per_fold"]) == {0, 1}
     assert json.loads((out / "config.json").read_text())["n_particles"] == 36
+
+
+def test_model_init_with_lighting_groups():
+    from cii.cnn.data import channel_names, rgb_groups
+    from cii.cnn.model import build_model
+    channels = ("rgb", "mask", "df")
+    assert channel_names(channels) == ["R", "G", "B", "mask", "df_R", "df_G", "df_B"]
+    assert rgb_groups(channels) == [[0, 1, 2], [4, 5, 6]]
+
+    model = build_model(3, in_channels=7, pretrained=False, groups=rgb_groups(channels))
+    w = model.conv1.weight
+    assert torch.equal(w[:, 0:3], w[:, 4:7])                     # same filters for both RGB groups
+    assert torch.count_nonzero(w[:, 3]) == 0                     # mask starts at zero
+
+
+def test_cross_validation_with_a_lighting_mode(tmp_path):
+    from PIL import Image
+    from cii.cnn.train import TrainParams, cross_validate
+
+    for d in ("crops", "masks", "crops_df"):
+        (tmp_path / d).mkdir()
+    yy, xx = np.mgrid[:96, :96] - 48
+    rows = []
+
+    for i in range(24):
+        cls = "A" if i % 2 == 0 else "B"
+        inside = (xx / (5 if cls == "A" else 10)) ** 2 + (yy / (5 if cls == "A" else 3)) ** 2 <= 1
+        img = np.full((96, 96, 3), 230, np.uint8)
+        img[inside] = 90
+        Image.fromarray(img).save(tmp_path / "crops" / f"{i}.png")
+        Image.fromarray((inside * 255).astype(np.uint8)).save(tmp_path / "masks" / f"{i}.png")
+        Image.fromarray(255 - img).save(tmp_path / "crops_df" / f"{i}.png")
+        rows.append({"crop": f"crops/{i}.png", "mask": f"masks/{i}.png", "sem_id": i, "training_class": cls,
+                     "class_label": "x", "split": "trainval", "fold": (i // 2) % 2,
+                     "crop_df": "" if i < 4 else f"crops_df/{i}.png"})              # 4 particles without df
+
+    ds = pd.DataFrame(rows)
+    p = TrainParams(epochs=1, batch_size=8, pretrained=False, threads=1, channels=("rgb", "mask", "df"))
+    out = tmp_path / "runs" / "df"
+    cross_validate(ds, tmp_path, out, p, log=lambda *a: None)
+
+    config = json.loads((out / "config.json").read_text())
+    assert config["channels"][-3:] == ["df_R", "df_G", "df_B"]
+    assert config["n_particles"] == 20                           # particles without df crop left out
+
+    # the same particles without the df channel (require)
+    p2 = TrainParams(epochs=1, batch_size=8, pretrained=False, threads=1, require=("df",))
+    cross_validate(ds, tmp_path, tmp_path / "runs" / "rgb_same", p2, log=lambda *a: None)
+    assert json.loads((tmp_path / "runs" / "rgb_same" / "config.json").read_text())["n_particles"] == 20

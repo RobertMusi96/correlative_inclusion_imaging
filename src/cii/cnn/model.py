@@ -1,9 +1,10 @@
 """Network: ResNet-18 (torchvision), optionally pre-trained on ImageNet.
 
-The first layer is widened from 3 to the number of input channels: the
-pre-trained RGB filters are kept, the filters for the extra channels (mask)
-start at zero, so at the start the network sees the image exactly as the
-pre-trained one. The last layer is replaced by one output per class.
+The first layer is widened from 3 to the number of input channels. Every RGB
+group (bright field and each lighting mode) gets a copy of the pre-trained RGB
+filters divided by the number of groups, so that at the start the response
+matches the pre-trained network; the filters of the mask channel start at zero.
+The last layer is replaced by one output per class.
 """
 from __future__ import annotations
 
@@ -11,9 +12,9 @@ import torch
 from torch import nn
 
 
-def build_model(n_classes: int, in_channels: int = 4, pretrained: bool = True) -> nn.Module:
+def build_model(n_classes: int, in_channels: int = 4, pretrained: bool = True, groups=([0, 1, 2],)) -> nn.Module:
     """ResNet-18 with in_channels inputs and n_classes outputs; ImageNet weights if pretrained
-    (downloaded by torchvision on first use)."""
+    (downloaded by torchvision on first use). groups: channel indices of the RGB groups."""
     from torchvision.models import ResNet18_Weights, resnet18
 
     model = resnet18(weights=ResNet18_Weights.DEFAULT if pretrained else None)
@@ -24,7 +25,8 @@ def build_model(n_classes: int, in_channels: int = 4, pretrained: bool = True) -
 
     with torch.no_grad():
         new.weight.zero_()
-        new.weight[:, :3] = old.weight
+        for g in groups:
+            new.weight[:, list(g)] = old.weight / len(groups)
 
     model.conv1 = new
     model.fc = nn.Linear(model.fc.in_features, n_classes)

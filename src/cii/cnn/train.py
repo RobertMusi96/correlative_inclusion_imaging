@@ -1,7 +1,10 @@
 """Cross-validation of the CNN over the dataset folds.
 
 Only training / validation particles are used (split 'trainval'); the test set
-is never loaded. For every fold k: train on the other folds, validate on fold k.
+is never loaded. With lighting modes among the channels (or in `require`), only
+particles with a crop of each of these modes are used; to compare runs with and
+without a lighting mode on the same particles, give it in `require` also for the
+run without it. For every fold k: train on the other folds, validate on fold k.
 Every run uses the same settings for all folds (TrainParams); the result is the
 validation score after the last epoch (no choice of the best epoch on the
 validation fold, which would make the score optimistic).
@@ -32,7 +35,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from .data import CHANNELS, CropDataset, channel_stats, load_arrays, orient
+from .data import DEFAULT_CHANNELS, CropDataset, channel_names, channel_stats, has_channels, load_arrays, orient, rgb_groups
 from .model import build_model
 
 
@@ -47,6 +50,8 @@ class TrainParams:
     tta: bool = True                # validation: mean over the 8 orientations
     seed: int = 0
     threads: int = 0                # CPU threads for torch (0 = torch default)
+    channels: tuple = DEFAULT_CHANNELS  # input: rgb, mask, lighting modes (cii.cnn.data)
+    require: tuple = ()             # lighting modes whose crops a particle must have (besides those in channels)
 
 
 def class_weights(y: np.ndarray, n_classes: int) -> np.ndarray:
@@ -79,12 +84,13 @@ def train_fold(x_tr, y_tr, x_va, y_va, n_classes: int, p: TrainParams, fold: int
 
     torch.manual_seed(p.seed + fold)
     mean, std = channel_stats(x_tr)
-    train = CropDataset(x_tr, y_tr, mean, std, augment=True, brightness=p.brightness, seed=p.seed + fold)
+    groups = rgb_groups(p.channels)
+    train = CropDataset(x_tr, y_tr, mean, std, augment=True, brightness=p.brightness, seed=p.seed + fold, groups=groups)
     val = CropDataset(x_va, y_va, mean, std)
     loader = torch.utils.data.DataLoader(train, batch_size=p.batch_size, shuffle=True,
                                          generator=torch.Generator().manual_seed(p.seed + fold))
 
-    model = build_model(n_classes, in_channels=x_tr.shape[1], pretrained=p.pretrained)
+    model = build_model(n_classes, in_channels=x_tr.shape[1], pretrained=p.pretrained, groups=groups)
     weights = torch.tensor(class_weights(y_tr, n_classes), dtype=torch.float32)
     loss_fn = nn.CrossEntropyLoss(weight=weights)
     opt = torch.optim.AdamW(model.parameters(), lr=p.lr, weight_decay=p.weight_decay)
@@ -190,16 +196,24 @@ def cross_validate(ds: pd.DataFrame, root: Path, out: Path, p: TrainParams, fold
     out.mkdir(parents=True, exist_ok=True)
 
     tv = ds[ds.split == "trainval"].reset_index(drop=True)          # the test set is never loaded
+    needed = list(p.channels) + [m for m in p.require if m not in p.channels]
+    ok = has_channels(tv, needed)
+
+    if not ok.all():
+        log(f"{int((~ok).sum())} of {len(tv)} particles left out: no crop of every lighting mode in "
+            f"{', '.join(m for m in needed if m not in ('rgb', 'mask'))}")
+        tv = tv[ok].reset_index(drop=True)
+
     classes = sorted(tv.training_class.unique())
     y = tv.training_class.map({c: i for i, c in enumerate(classes)}).to_numpy()
     folds = sorted(tv.fold.unique()) if folds is None else list(folds)
 
-    config = {"params": asdict(p), "classes": classes, "channels": CHANNELS, "dataset": str(root),
+    config = {"params": asdict(p), "classes": classes, "channels": channel_names(p.channels), "dataset": str(root),
               "n_particles": len(tv), "folds": [int(k) for k in folds], "torch": torch.__version__}
     (out / "config.json").write_text(json.dumps(config, indent=2))
 
     log(f"loading {len(tv)} crops")
-    x = load_arrays(tv, root)
+    x = load_arrays(tv, root, p.channels)
 
     histories, scores, probs = [], {}, np.full((len(tv), len(classes)), np.nan)
 

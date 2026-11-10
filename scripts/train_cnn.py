@@ -9,9 +9,15 @@ settings for all folds; the score is the balanced accuracy after the last epoch.
 Output: dataset_vN/runs/<name>/ (config.json, history.csv, predictions.csv,
 metrics.json, curves.png, confusion.png, model_fold<k>.pt), see cii.cnn.train.
 
+Input channels (--channels): rgb (bright field), mask, and lighting modes added
+with scripts/add_lighting.py (e.g. df, ml). With --require df,ml only particles
+that have these crops are used, also when they are not among the channels.
+
 Examples:
     python scripts/train_cnn.py data/datasets/dataset_v1 --name resnet18_rgb
     python scripts/train_cnn.py data/datasets/dataset_v1 --name quick --folds 0 --epochs 3
+    python scripts/train_cnn.py data/datasets/dataset_v1 --name rgb_same --require df,ml
+    python scripts/train_cnn.py data/datasets/dataset_v1 --name rgb_df --channels rgb,mask,df --require df,ml
 """
 from __future__ import annotations
 
@@ -41,6 +47,10 @@ def main():
     ap.add_argument("--no-tta", action="store_true", help="validate without the 8 orientations")
     ap.add_argument("--seed", type=int, default=d.seed)
     ap.add_argument("--threads", type=int, default=d.threads, help="CPU threads (default: torch default)")
+    ap.add_argument("--channels", default=",".join(d.channels),
+                    help="input channels: rgb, mask and added lighting modes, e.g. rgb,mask,df (default rgb,mask)")
+    ap.add_argument("--require", default="", help="lighting modes whose crops every particle must have, e.g. df,ml "
+                                                  "(to compare runs with and without them on the same particles)")
     ap.add_argument("--overwrite", action="store_true", help="replace an existing run folder")
     args = ap.parse_args()
 
@@ -56,7 +66,8 @@ def main():
 
     p = TrainParams(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, weight_decay=args.weight_decay,
                     brightness=args.brightness, pretrained=not args.no_pretrained, tta=not args.no_tta,
-                    seed=args.seed, threads=args.threads)
+                    seed=args.seed, threads=args.threads, channels=tuple(args.channels.split(",")),
+                    require=tuple(m for m in args.require.split(",") if m))
     folds = [int(k) for k in args.folds.split(",")] if args.folds else None
 
     ds = pd.read_csv(csv, low_memory=False)

@@ -248,3 +248,28 @@ def test_baselines_section_with_bse(tmp_path):
     section_baselines(ds, out, log=lambda *a: None, bse=tmp_path / "bse")
     again = pd.read_excel(out / "6_flagged_review.xlsx", sheet_name="review").set_index("sem_id")
     assert again.loc[review.sem_id[0], "verdict"] == "label wrong"
+
+
+def test_lighting_in_sections_1_and_3(tmp_path):
+    from PIL import Image
+    from cii.report import section_appearance, section_composition
+    ds, out = toy_full(tmp_path, n=200)
+
+    # a dark-field crop for every particle: the particle lights up, more strongly for class C
+    (tmp_path / "crops_df").mkdir()
+    ds["crop_df"] = ""
+    for i, r in ds.iterrows():
+        mask = np.asarray(Image.open(tmp_path / r["mask"])) > 0
+        df = np.full((96, 96, 3), 8, np.uint8)
+        df[mask] = 220 if r.training_class == "C" else 120
+        Image.fromarray(df).save(tmp_path / "crops_df" / f"{i}.png")
+        ds.loc[i, "crop_df"] = f"crops_df/{i}.png"
+
+    t = section_composition(ds, out, log=lambda *a: None)
+    assert (t["lighting"]["dark field"] == t["lighting"]["n"]).all()
+
+    r = section_appearance(ds[ds.split == "trainval"], out, log=lambda *a: None)
+    steps = r["crop_features"]["steps"].set_index("step")
+    assert "+ dark field" in steps.index and "dark field only" in steps.index
+    assert (out / "3_lighting_df.png").exists()
+    assert "lt_df_in_diff" in pd.read_csv(out / "3_crop_features.csv").columns

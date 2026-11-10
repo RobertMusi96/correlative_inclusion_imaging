@@ -4,6 +4,8 @@ Reads dataset_vN/dataset.csv and writes tables and figures into dataset_vN/repor
 one file group per section (prefix = section number). The test set is held out: section 1
 counts its particles per class (balance of the split), section 5 uses the positions of its
 blocks; all other statistics, baselines and figures use the training / validation particles.
+Lighting modes added with scripts/add_lighting.py are included automatically (sections 1, 3,
+4, 6).
 
     1  composition and balance: 1_composition.xlsx, 1_composition.png, 1_origin.png
     2  size: 2_size.xlsx, 2_size.png (size per class, VHX/SEM ratio, size-only baseline)

@@ -146,7 +146,19 @@ def composition_tables(ds: pd.DataFrame) -> dict[str, pd.DataFrame]:
     tv = counts["trainval"]
     weights = pd.DataFrame({"n_trainval": tv, "weight": (tv.sum() / (len(tv) * tv)).round(3)})
 
-    return {"counts": counts, "shares_pct": shares, "origin": origin, "class_source": source, "weights": weights}
+    t = {"counts": counts, "shares_pct": shares, "origin": origin, "class_source": source, "weights": weights}
+
+    # particles with a crop of each added lighting mode (see scripts/add_lighting.py)
+    from .lighting import display_name, lighting_modes
+
+    modes = lighting_modes(ds)
+    if modes:
+        has = pd.DataFrame({display_name(m): ds[f"crop_{m}"].fillna("").ne("") for m in modes})
+        cov = has.groupby(ds.training_class).sum().reindex(classes, fill_value=0).astype(int)
+        cov.insert(0, "n", ds.training_class.value_counts().reindex(classes))
+        t["lighting"] = cov
+
+    return t
 
 
 def composition_figure(ds: pd.DataFrame, t: dict, path: Path):
@@ -252,6 +264,11 @@ def section_composition(ds: pd.DataFrame, out: Path, log=print) -> dict:
         f"{spread:.1f} percentage points")
     log("class weights (trainval, inverse frequency): "
         + ", ".join(f"{c} {w:.2f}" for c, w in t["weights"].weight.items()))
+
+    if "lighting" in t:
+        log("particles with a crop of the other lighting modes:")
+        log(t["lighting"].to_string())
+
     return t
 
 
@@ -635,16 +652,45 @@ def exposure_figure(ds: pd.DataFrame, exp: pd.DataFrame, path: Path):
 # crop features (shape, interior, edge; cii.crop_features): do they separate what colour cannot?
 
 FEATURE_GROUPS = ["colour", "size", "shape", "interior", "edge", "neighbours"]
-IMAGE_GROUPS = ["shape", "interior", "edge", "neighbours"]      # computed from the crops / VHX detection
 
 
-def feature_definitions() -> dict:
-    """Group and label of every crop feature (cii.crop_features) and neighbour feature
-    (cii.neighbours): column -> (group, label)."""
+def feature_definitions(columns=()) -> dict:
+    """Group and label of every crop feature (cii.crop_features), neighbour feature
+    (cii.neighbours) and of the lighting features among `columns` (cii.lighting, group = name
+    of the lighting mode): column -> (group, label)."""
     from .crop_features import FEATURES as CROP
+    from .lighting import light_feature_definitions
     from .neighbours import FEATURES as NEIGHBOURS
 
-    return dict(CROP) | {c: ("neighbours", label) for c, label in NEIGHBOURS.items()}
+    return dict(CROP) | {c: ("neighbours", label) for c, label in NEIGHBOURS.items()} | light_feature_definitions(columns)
+
+
+def feature_groups(group: dict) -> list[str]:
+    """Groups present in a feature table, in the order of the baselines: FEATURE_GROUPS, then
+    the lighting modes."""
+    fixed = [g for g in FEATURE_GROUPS if g in group.values()]
+    lighting = [g for g in dict.fromkeys(group.values()) if g not in FEATURE_GROUPS]
+    return fixed + lighting
+
+
+def image_features(ds: pd.DataFrame, root: Path, vhx: Path | None = None, log=print) -> pd.DataFrame | None:
+    """All features computed from the images: crop features, neighbour features (if the VHX
+    detection is found) and the features of every added lighting mode. None without crops."""
+    from .crop_features import dataset_features
+    from .lighting import dataset_light_features, lighting_modes
+
+    feats = dataset_features(ds, root)
+    if feats is None:
+        return None
+
+    nb = neighbour_columns(ds, root, vhx, log)
+    if nb is not None:
+        feats = feats.join(nb)
+
+    for m in lighting_modes(ds):
+        feats = feats.join(dataset_light_features(ds, root, m))
+
+    return feats
 
 
 def detection_folder(root: Path, vhx: Path | None = None) -> Path | None:
@@ -691,7 +737,7 @@ def colour_columns(ds: pd.DataFrame) -> pd.DataFrame:
 def feature_table(ds: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """All features side by side (colour, log VHX ECD, crop features and, if present, neighbour
     features) and the group of each column."""
-    defs = feature_definitions()
+    defs = feature_definitions(feats.columns)
 
     colour = colour_columns(ds)
     size = pd.DataFrame({"log_vhx_ecd": np.log(ds.vhx_ecd_um.clip(lower=0.1))}, index=ds.index)
@@ -755,13 +801,19 @@ def crop_feature_steps(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tup
     """Baselines adding one feature group after the other (colour, + size, + shape,
     + interior, + edge, + neighbours if present), the crop features alone and the neighbour
     features alone: balanced accuracy over all classes and for the confused pair alone (a model
-    trained only on these two classes)."""
-    tv = (ds.split == "trainval").to_numpy()
+    trained only on these two classes). With added lighting modes, all steps use only the
+    particles that have a crop of every mode, so that the steps compare the same particles."""
+    from .lighting import lighting_modes
+
+    tv = (ds.split == "trainval").to_numpy().copy()
+    for m in lighting_modes(ds):
+        tv &= ds[f"crop_{m}"].fillna("").ne("").to_numpy()
+
     y = ds.training_class.to_numpy()[tv]
     folds = ds.fold.to_numpy()[tv]
     in_pair = np.isin(y, pair)
 
-    present = [g for g in FEATURE_GROUPS if g in group.values()]
+    present = feature_groups(group)
 
     steps = []
     for k in range(1, len(present) + 1):
@@ -770,8 +822,9 @@ def crop_feature_steps(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tup
         steps.append((name, used))
     steps.append(("crop features only", ["shape", "interior", "edge"]))
 
-    if "neighbours" in present:
-        steps.append(("neighbours only", ["neighbours"]))
+    for g in present:
+        if g not in ("colour", "size", "shape", "interior", "edge"):
+            steps.append((f"{g} only", [g]))
 
     rows = []
     for name, used in steps:
@@ -781,7 +834,7 @@ def crop_feature_steps(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tup
         all_scores, _ = cv_balanced_accuracy(Xs, y, folds, class_order(ds))
         pair_scores, _ = cv_balanced_accuracy(Xs[in_pair], y[in_pair], folds[in_pair], list(pair))
 
-        rows.append({"step": name, "groups": ", ".join(used), "n_features": len(cols),
+        rows.append({"step": name, "groups": ", ".join(used), "n_features": len(cols), "n_particles": int(tv.sum()),
                      "balanced_accuracy": round(float(all_scores.mean()), 3),
                      "per_fold": ", ".join(map(str, all_scores)),
                      "pair_balanced_accuracy": round(float(pair_scores.mean()), 3),
@@ -796,7 +849,8 @@ def feature_ranking(ds: pd.DataFrame, X: pd.DataFrame, group: dict, pair: tuple)
     higher values."""
     from sklearn.metrics import roc_auc_score
 
-    labels = {c: label for c, (_, label) in feature_definitions().items()}
+    labels = {c: (f"{g}: " if g not in FEATURE_GROUPS else "") + label
+              for c, (g, label) in feature_definitions(X.columns).items()}
     labels |= {"log_vhx_ecd": "VHX ECD (log)", "log_pinkness": "pinkness (log)"}
     labels |= {f"vhx_mean_{ch}": f"particle colour {ch} (0-255)" for ch in "RGB"}
     labels |= {c: APPEARANCE.get(c, c) for c in X.columns if c not in labels}
@@ -876,7 +930,7 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
     use_style()
     classes = class_order(ds)
     colours = class_colours(classes)
-    top = ranking[ranking.group.isin(IMAGE_GROUPS)].head(n)
+    top = ranking[~ranking.group.isin(["colour", "size"])].head(n)
     labels = [f"{c}\n(n={int((ds.training_class == c).sum())})" for c in classes]
 
     cols = 3
@@ -902,12 +956,40 @@ def crop_feature_boxes(ds: pd.DataFrame, X: pd.DataFrame, ranking: pd.DataFrame,
     plt.close(fig)
 
 
+def lighting_boxes(ds: pd.DataFrame, X: pd.DataFrame, cols: list[str], defs: dict, group: str, path: Path):
+    """Box plots per class of all features of one lighting mode (3_lighting_<name>.png)."""
+    use_style()
+    classes = class_order(ds)
+    colours = class_colours(classes)
+    labels = [f"{c}\n(n={int(X.loc[ds.training_class == c, cols[0]].notna().sum())})" for c in classes]
+
+    ncol = 4
+    nrow = int(np.ceil(len(cols) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(18, 3.4 * nrow), squeeze=False)
+
+    for ax, c in zip(axes.ravel(), cols):
+        data = [X.loc[ds.training_class == k, c].dropna().to_numpy() for k in classes]
+        _boxes(ax, data, labels, [colours[k] for k in classes], [""] * len(classes), "", defs[c][1])
+
+        if ax not in axes[:, 0]:
+            ax.set_yticklabels([])
+
+    for ax in axes.ravel()[len(cols):]:
+        ax.set_visible(False)
+
+    fig.suptitle(f"{group}: features per class (measured on the particle object of the bright-field crop; "
+                 f"original grey values)", x=0.01, ha="left", color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.3 / fig.get_figheight()))
+    save_figure(fig, path, dpi=150)
+    plt.close(fig)
+
+
 def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Path, log=print) -> dict:
     """Crop features of section 3: writes 3_crop_features.csv (per particle),
     3_crop_features.xlsx, 3_crop_features.png and 3_crop_features_top.png, and prints the
     baselines per step and the best single features for the most confused pair. feats holds
     the crop features and, if computed, the neighbour features."""
-    defs = feature_definitions()
+    defs = feature_definitions(feats.columns)
     used = [c for c in defs if c in feats]
 
     X, group = feature_table(ds, feats)
@@ -932,6 +1014,13 @@ def crop_feature_part(ds: pd.DataFrame, feats: pd.DataFrame, base: dict, out: Pa
     crop_feature_figure(steps, ranking, pair, base["chance"], out / "3_crop_features.png")
     crop_feature_boxes(ds, X, ranking, out / "3_crop_features_top.png")
 
+    for g in feature_groups(group):
+        if g in FEATURE_GROUPS:
+            continue
+        cols = [c for c in used if defs[c][0] == g]
+        name = cols[0].removeprefix("lt_").split("_")[0]
+        lighting_boxes(ds, X, cols, defs, g, out / f"3_lighting_{name}.png")
+
     log(f"crop features: most confused pair {pair[0]} / {pair[1]}")
     log(steps[["step", "n_features", "balanced_accuracy", "pair_balanced_accuracy"]].to_string(index=False))
     log("best single features for the pair (AUC):")
@@ -945,8 +1034,6 @@ def section_appearance(ds: pd.DataFrame, out: Path, log=print, vhx: Path | None 
     3_exposure.png and the crop features (3_crop_features.*), with the neighbour features if
     the VHX detection folder is found (vhx or dataset_info.json); prints medians, pink shares,
     the colour-only baseline, the exposure and the crop feature baselines."""
-    from .crop_features import dataset_features
-
     t = appearance_tables(ds)
     base = colour_baseline(ds)
     exp = crop_exposure(ds, out.parent)
@@ -985,12 +1072,7 @@ def section_appearance(ds: pd.DataFrame, out: Path, log=print, vhx: Path | None 
     log("crops, median per class: background grey level and saturated pixels (%)")
     log(e.to_string())
 
-    feats = dataset_features(ds, out.parent)
-    nb = neighbour_columns(ds, out.parent, vhx, log)
-
-    if nb is not None:
-        feats = feats.join(nb)
-
+    feats = image_features(ds, out.parent, vhx, log)
     cf = crop_feature_part(ds, feats, base, out, log)
 
     return {"tables": t, "baseline": base, "exposure": exp, "crop_features": cf}
@@ -1116,21 +1198,17 @@ def model_features(ds: pd.DataFrame, out: Path, vhx: Path | None = None) -> tupl
     interior, edge, and neighbours if computed) from 3_crop_features.csv, or computed from the
     crops (and the VHX detection) if that file is missing; colour and size only without
     crops. Returns the table and a short description of the groups."""
-    from .crop_features import dataset_features
-
-    defs = feature_definitions()
     feats = None
     csv = out / "3_crop_features.csv"
 
     if csv.exists():
         f = pd.read_csv(csv).set_index("crop")
+        defs = feature_definitions(f.columns)
         if set(ds.crop) <= set(f.index):
             feats = f.loc[ds.crop, [c for c in defs if c in f]].set_index(ds.index)
 
     if feats is None:
-        feats = dataset_features(ds, out.parent)
-        nb = neighbour_columns(ds, out.parent, vhx, log=lambda *a: None) if feats is not None else None
-        feats = feats.join(nb) if nb is not None else feats
+        feats = image_features(ds, out.parent, vhx, log=lambda *a: None)
 
     if feats is None:
         X = colour_columns(ds)
@@ -1138,7 +1216,7 @@ def model_features(ds: pd.DataFrame, out: Path, vhx: Path | None = None) -> tupl
         return X, "colour + size; no crops"
 
     X, group = feature_table(ds, feats)
-    return X, " + ".join(g for g in FEATURE_GROUPS if g in group.values())
+    return X, " + ".join(feature_groups(group))
 
 
 def cv_probabilities(X: np.ndarray, y: np.ndarray, folds: np.ndarray, classes: list) -> np.ndarray:
@@ -1815,21 +1893,66 @@ def crop_tile(ax, root: Path, r, outline: str):
     ax.grid(False)
 
 
-def gallery_figure(ds: pd.DataFrame, root: Path, rows: pd.DataFrame, title: str, path: Path, cols: int = 8):
-    """Crops of one group in a grid (sorted by SEM ECD), each with its mask outline and a
-    caption: SEM id, SEM / VHX ECD."""
+def lighting_tile(ax, root: Path, r, mode: str | None, outline: str):
+    """Crop of one particle in a lighting mode (None = bright field) with the bright-field mask
+    outline; a note if the particle has no crop of that mode."""
+    from .lighting import display_name
+
+    if mode is None:
+        crop_tile(ax, root, r, outline)
+        return
+
+    crop = getattr(r, f"crop_{mode}", "")
+    if isinstance(crop, str) and crop:
+        crop_tile(ax, root, r._replace(crop=crop), outline)
+        return
+
+    ax.text(0.5, 0.5, f"no {display_name(mode)} crop", ha="center", va="center", fontsize=8, color=MUTED,
+            transform=ax.transAxes)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(False)
+
+
+def group_caption(fig, axes_left, axes_right, text: str, fontsize: float):
+    """Caption centred above a group of tiles (from the left edge of the first to the right
+    edge of the last tile)."""
+    left = axes_left.get_position().x0
+    right = axes_right.get_position().x1
+    top = axes_left.get_position().y1 + 0.04 / fig.get_figheight()
+    fig.text((left + right) / 2, top, text, ha="center", va="bottom", fontsize=fontsize, linespacing=1.2)
+
+
+def gallery_figure(ds: pd.DataFrame, root: Path, rows: pd.DataFrame, title: str, path: Path):
+    """Crops of one group (sorted by SEM ECD), each with its mask outline and a caption (SEM
+    id, SEM / VHX ECD); with added lighting modes, the particle's crops of every mode side by
+    side (bright field first)."""
+    from .lighting import display_name, lighting_modes
+
     use_style()
     colours = class_colours(class_order(ds))
+    modes = lighting_modes(ds)
+    per = 1 + len(modes)
+    cols = 8 if per == 1 else max(2, 9 // per)                      # particles per row
     nrow = int(np.ceil(len(rows) / cols))
-    fig, axes = tile_grid(nrow, cols, tile_in=1.9, caption_lines=2, fontsize=9)
+    fig, axes = tile_grid(nrow, cols * per, tile_in=1.9, caption_lines=2, fontsize=9, group=per,
+                          group_gap_in=0.35 if per > 1 else 0.0)
 
-    for ax, r in zip(axes.flat, rows.itertuples()):
-        ax.axis("on")
-        crop_tile(ax, root, r, colours[r.training_class])
-        ax.set_title(f"#{r.sem_id}\nSEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm", fontsize=9, pad=3)
+    for k, r in enumerate(rows.itertuples()):
+        row, col = divmod(k, cols)
+
+        for j, mode in enumerate([None] + modes):
+            ax = axes[row, col * per + j]
+            ax.axis("on")
+            lighting_tile(ax, root, r, mode, colours[r.training_class])
+
+        text = f"#{r.sem_id}\nSEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm"
+        group_caption(fig, axes[row, col * per], axes[row, col * per + per - 1], text, 9)
 
     um = float(rows.crop_size_px.iloc[0] * rows.um_per_px.iloc[0])
-    tile_header(fig, f"{short_class(title)}  (tile {um:.1f} µm wide; line = mask)")
+    order = " | ".join(["bright field"] + [display_name(m) for m in modes])
+    what = f"per particle: {order}; " if modes else ""
+    tile_header(fig, f"{short_class(title)}  ({what}tile {um:.1f} µm wide; line = bright-field mask; original grey values)")
     save_figure(fig, path, dpi=130)
     plt.close(fig)
 
@@ -1929,57 +2052,66 @@ def bse_tile(ax, bse: dict, cache, r, width_um: float):
                            fill=False, ec="#e8590c", lw=0.7))
 
 
+def flagged_layout(ds: pd.DataFrame, bse: bool) -> tuple[int, int, int]:
+    """Layout of the flagged pages: tiles per particle (bright field, lighting modes, BSE),
+    particles per row and particles per page (6 rows; 24 for bright field only)."""
+    from .lighting import lighting_modes
+
+    per = 1 + len(lighting_modes(ds)) + (1 if bse else 0)
+    per_row = {1: 6, 2: 4}.get(per, max(1, 8 // per))
+    per_page = FLAGGED_PER_PAGE if per <= 2 else per_row * 6
+    return per, per_row, per_page
+
+
 def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path, bse: dict | None) -> list[Path]:
-    """Pages of the model-flagged particles: per particle the VHX crop with its mask outline
-    and, with BSE images, the BSE crop of the same width next to it. Numbered [page-tile] as in
-    6_flagged_review.xlsx."""
+    """Pages of the model-flagged particles: per particle the bright-field crop with its mask
+    outline, the crops of the added lighting modes and, with BSE images, the BSE crop of the
+    same width. Numbered [page-tile] as in 6_flagged_review.xlsx."""
+    from .lighting import display_name, lighting_modes
     from .matching_figures import ImageCache, load_bse_8bit
 
     use_style()
     colours = class_colours(class_order(ds))
     cache = ImageCache(load_bse_8bit) if bse else None
-    per_row = 4 if bse else 6
+    modes = lighting_modes(ds)
+    per, per_row, per_page = flagged_layout(ds, bse is not None)
     files = []
 
-    for p0 in range(0, len(flagged), FLAGGED_PER_PAGE):
-        page = flagged.iloc[p0:p0 + FLAGGED_PER_PAGE]
-        page_no = p0 // FLAGGED_PER_PAGE + 1
+    for p0 in range(0, len(flagged), per_page):
+        page = flagged.iloc[p0:p0 + per_page]
+        page_no = p0 // per_page + 1
         nrow = int(np.ceil(len(page) / per_row))
-        ncol = per_row * (2 if bse else 1)
-        per = 2 if bse else 1
-        fig, axes = tile_grid(nrow, ncol, tile_in=2.3 if bse else 3.3, caption_lines=4, fontsize=FLAGGED_FONT,
-                              header_in=0.55, group=per, group_gap_in=0.35 if bse else 0.6)
+        fig, axes = tile_grid(nrow, per_row * per, tile_in=2.3 if per > 1 else 3.3, caption_lines=4,
+                              fontsize=FLAGGED_FONT, header_in=0.55, group=per, group_gap_in=0.35 if per > 1 else 0.6)
 
         for k, r in enumerate(page.itertuples()):
             row, col = divmod(k, per_row)
-            av = axes[row, col * per]
-            av.axis("on")
-            crop_tile(av, root, r, colours[r.training_class])
+            first = col * per
+
+            for j, mode in enumerate([None] + modes):
+                ax = axes[row, first + j]
+                ax.axis("on")
+                lighting_tile(ax, root, r, mode, colours[r.training_class])
 
             if bse:
-                ab = axes[row, col * per + 1]
+                ab = axes[row, first + per - 1]
                 ab.axis("on")
                 bse_tile(ab, bse, cache, r, float(r.crop_size_px * r.um_per_px))
 
-            # one caption across the particle's tiles (VHX | BSE), so the text can be large
+            # one caption across the particle's tiles, so the text can be large
             typ = r.Type if isinstance(r.Type, str) else r.class_label
             where = f" · BSE field {r.field}" if bse else ""
             caption = (f"[{page_no}-{k + 1}] #{r.sem_id} {typ}{where}\n"
                        f"{short_class(r.training_class)} → {short_class(r.predicted)}\n"
                        f"p(label) {r.p_own:.2f} · p(predicted) {r.p_predicted:.2f}\n"
                        f"SEM {r.sem_ecd_um:.1f} · VHX {r.vhx_ecd_um:.1f} µm · {r.match_warnings or 'no match warning'}")
-
-            left = av.get_position().x0
-            right = axes[row, col * per + per - 1].get_position().x1
-            top = av.get_position().y1 + 0.04 / fig.get_figheight()
-            fig.text((left + right) / 2, top, caption, ha="center", va="bottom", fontsize=FLAGGED_FONT,
-                     linespacing=1.2)
+            group_caption(fig, axes[row, first], axes[row, first + per - 1], caption, FLAGGED_FONT)
 
         um = float(page.crop_size_px.iloc[0] * page.um_per_px.iloc[0])
-        what = "VHX crop with mask | BSE with SEM box" if bse else "VHX crop with mask"
+        order = ["VHX bright field with mask"] + [display_name(m) for m in modes] + (["BSE with SEM box"] if bse else [])
         tile_header(fig, f"Model-flagged particles, page {page_no}: label → predicted class; p = out-of-fold "
-                         f"model probability of the label and of the predicted class; {what}; {um:.1f} µm wide",
-                    fontsize=13)
+                         f"model probability of the label and of the predicted class; {' | '.join(order)}; "
+                         f"{um:.1f} µm wide", fontsize=13)
 
         path = out / f"6_flagged_{page_no:02d}.png"
         save_figure(fig, path, dpi=140)
@@ -1989,7 +2121,7 @@ def flagged_pages(flagged: pd.DataFrame, ds: pd.DataFrame, root: Path, out: Path
     return files
 
 
-def flagged_review(flagged: pd.DataFrame, out: Path) -> Path:
+def flagged_review(flagged: pd.DataFrame, out: Path, per_page: int = FLAGGED_PER_PAGE) -> Path:
     """6_flagged_review.xlsx: one row per model-flagged particle with its tile number, label,
     prediction, sizes, match warnings and key elements, plus empty 'verdict' and 'note'
     columns. Verdicts already entered for the same SEM particles are kept."""
@@ -1997,8 +2129,8 @@ def flagged_review(flagged: pd.DataFrame, out: Path) -> Path:
     wt = [c for c in ["O_wt", "N_wt", "S_wt", "Al_wt", "Ca_wt", "Mg_wt", "Si_wt", "Ti_wt", "Fe_wt"] if c in flagged]
 
     d = flagged.copy()
-    d["page"] = np.arange(len(d)) // FLAGGED_PER_PAGE + 1
-    d["tile"] = np.arange(len(d)) % FLAGGED_PER_PAGE + 1
+    d["page"] = np.arange(len(d)) // per_page + 1
+    d["tile"] = np.arange(len(d)) % per_page + 1
     cols = ["page", "tile", "sem_id", "field", "vhx_image", "crop", "training_class", "class_label", "Type",
             "predicted", "p_own", "p_predicted", "sem_ecd_um", "vhx_ecd_um", "match_type", "match_warnings"] + wt
     d = d[cols].copy()
@@ -2048,7 +2180,7 @@ def section_baselines(ds: pd.DataFrame, out: Path, log=print, bse: Path | None =
     flagged, _ = flagged_particles(ds, out, vhx)
     lookup = bse_lookup(ds, root, bse, matches, log)
     pages = flagged_pages(flagged, ds, root, out, lookup)
-    review = flagged_review(flagged, out)
+    review = flagged_review(flagged, out, flagged_layout(ds, lookup is not None)[2])
 
     log(f"galleries: {len(gal)} origin groups; model-flagged particles: {len(flagged)} on {len(pages)} page(s)"
         f"{' with BSE' if lookup else ''}; review sheet {review.name}")
